@@ -36,7 +36,12 @@ function* text(t) {
 
 let seq = 0;
 export function apply(ctx) {
-  ctx.on('llm/stream', async function* (options) {
+  ctx.on('llm/stream', async function* (options, next) {
+    // no script configured: real models (pass through)
+    if (!process.env.JD_FAKE_SCRIPT) {
+      yield* next();
+      return;
+    }
     const msgs = options.messages ?? [];
     const system = [options.system ?? '', ...msgs.filter((m) => m.role === 'system').map(textOf)].join('\n');
     const firstUser = textOf(msgs.find((m) => m.role === 'user' && (!m.source || m.source.kind === 'user')) ?? {});
