@@ -14,6 +14,7 @@ import { Run } from '../lib/engine/run.js';
 import { tmpdir, gitRepo } from './helpers.js';
 
 process.env.JD_WORKTREES_ROOT = tmpdir('jd-wt-');
+process.env.JD_HOME = tmpdir('jd-home-');
 process.env.JD_RETRY_ASK_MS = '10';
 
 const T = Object.fromEntries([...rootTools, ...workerTools].map((t) => [t.name, t]));
@@ -70,6 +71,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
     async spawnWorker(h, { role, prompt, model, register }) {
       calls.spawns.push({ role, model, nodeId: h.worker?.nodeId ?? null, checkId: h.worker?.checkId ?? null, register });
       hub.byWorker.set(worker.id, h.key);
+      if (register !== false && h.worker) h.worker.childId = worker.id;
       const key = h.worker?.nodeId ? `${role}:${h.worker.nodeId}` : role;
       const fn = scripts[key] ?? scripts[role] ?? (async () => {});
       const exec = (name, args) => T[name].execute(args, { agent: worker, signal: sig() });
@@ -293,7 +295,7 @@ test('T8: hand checks come as one checklist; a failure goes through the fix loop
   const humanAsks = w.calls.asks.filter((ids) => ids.some((id) => id.startsWith('HC:')));
   assert.equal(humanAsks.length, 1, 'presented once');
   assert.ok(w.calls.spawns.some((s) => s.role === 'fixer' && s.checkId === 'H1'));
-  assert.ok(run.state.notes.some((n) => n.kind === 'human_fix' && /fixed by a builder \(not re-checked by hand\)/.test(n.text)));
+  assert.ok(run.state.notes.some((n) => n.kind === 'human_fix' && /a fix was committed and every automated check still passes \(not re-checked by hand\)/.test(n.text)));
   assert.equal(run.state.phase, 'done');
 });
 
@@ -353,7 +355,7 @@ test('U17/H1 live: jd_pause during the loop pauses at the next checkpoint and no
   assert.equal(run.state.tree.nodes['N.1'].status, 'done', 'the step in flight finished first');
   assert.match(w.calls.notify.at(-1), /Paused at a checkpoint/);
   await assert.rejects(w.rootExec('jd_run'), /paused/);
-  JSON.parse(await w.rootExec('jd_resettle', { target: 'build' }));
+  assert.equal(JSON.parse(await w.rootExec('jd_resettle', { target: 'build' })).phase, 'build', 'nothing changed, so the run continues in build');
   const done = await runToEnd(w);
   assert.equal(done.state.phase, 'done');
 });
@@ -412,4 +414,109 @@ test('real-DSH regressions: the ask payload is lossless JSON; the PRD is the dev
     { role: 'user', content: [{ type: 'text', text: '<system-reminder>x</system-reminder>' }] },
   ] } };
   assert.equal(latestUserText(agent), '# PRD\nBuild greet.');
+});
+
+// ---------------------------------------------------------------- review regressions (X1)
+
+test('X1#4: a crash after a commit but before its checks were recorded rolls back to the recorded base', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run = w.handle().run;
+  // simulate: worker started (bases recorded), claimed, then an unproven commit, then the process died
+  run.advance('build');
+  const wt = run.state.settings.repos[0].workPath;
+  const base = git(wt, 'rev-parse', 'HEAD');
+  const wid = run.workerStart({ role: 'builder', nodeId: 'N.1', bases: { [wt]: base } });
+  run.tree('claim', 'N.1', wid);
+  fs.writeFileSync(path.join(wt, 'greet.js'), 'export const greet = () => "unproven";\n');
+  git(wt, 'add', '-A');
+  git(wt, 'commit', '-qm', 'unproven');
+  const done = await runToEnd(w);
+  assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
+  assert.doesNotMatch(git(wt, 'log', '--format=%s'), /unproven/);
+  assert.ok(done.state.notes.some((n) => n.kind === 'recovery'));
+});
+
+test('X1#11/#12: a fix that does not fix, or breaks another check, is rolled back and logged; nothing silent', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  // N.2 "passes" its own check but U2 needs greet exported AND the fixers only break things
+  w.scripts.fixer = async ({ exec, run }) => {
+    fs.writeFileSync(path.join(run.state.settings.repos[0].workPath, 'greet.js'), 'export const greet = () => "broken";\n');
+    await exec('jd_submit', { summary: 'tried' });
+  };
+  await w.settleToFinal();
+  // make U2 impossible: its command checks a symbol nobody provides
+  w.handle().run.store.commit('check_def', { ...w.handle().run.state.checks.U2, command: `node -e "import('./index.js').then(m=>process.exit(m.nope?0:1))"` });
+  w.handle().run.parity('final', true);
+  const run = await runToEnd(w);
+  assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+  const wt = run.state.settings.repos[0].workPath;
+  assert.equal(fs.readFileSync(path.join(wt, 'greet.js'), 'utf8'), 'export const greet = (n) => `Hello, ${n}!`;\n', 'breaking fixes were rolled back');
+  assert.doesNotMatch(git(wt, 'log', '--format=%s'), /jd\(fix/);
+  assert.ok(run.state.blockers.some((b) => b.checkId === 'U2'));
+  assert.equal(run.state.checks.U1.results.at(-1).ok, true);
+});
+
+test('X1#10: a pause requested during verification pauses there (not silently skipped)', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  let asked = false;
+  w.scripts.fixer = async ({ exec }) => {
+    if (!asked) {
+      asked = true;
+      await w.rootExec('jd_pause', { reason: 'change during verify' });
+    }
+    await exec('jd_submit', { summary: 'noop' });
+  };
+  await w.settleToFinal();
+  w.handle().run.store.commit('check_def', { ...w.handle().run.state.checks.U2, command: 'false' });
+  w.handle().run.parity('final', true);
+  await w.rootExec('jd_run');
+  await w.handle().loop;
+  const run = w.handle().run;
+  assert.equal(run.state.side, 'paused');
+  assert.equal(run.state.phase, 'verify');
+  assert.match(w.calls.notify.at(-1), /Paused at a checkpoint/);
+});
+
+test('X1#3/#16: resume while the loop runs reuses the same store; after a restart the gate re-attaches from the registry', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const h = w.handle();
+  const store = h.run.store;
+  const res = JSON.parse(await w.rootExec('jd_resume', { name: h.run.name }));
+  assert.equal(res.resumed, h.run.name);
+  assert.equal(w.handle().run.store, store, 'no second writer');
+  // restart: in-memory hub gone; the first gated call of that session re-attaches
+  hub.runs.clear();
+  hub.bySession.clear();
+  const d = judge({ name: 'bash', arguments: { command: 'git push origin main' }, agent: w.root });
+  assert.equal(d?.kind, 'deny', 'gate active right after a restart');
+});
+
+test('X1#8/#14/#15: jd_run before prepare is refused without blocking; no single questions after final parity; only the assigned worker acts', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run = w.handle().run;
+  // an unprepared run: drop the workspace and re-give the final yes
+  run.set('repos', run.state.settings.repos.map(({ workPath, branch, ...r }) => r));
+  run.parity('final', true);
+  await assert.rejects(w.rootExec('jd_run'), /cannot start the build/);
+  assert.equal(run.state.side, null, 'not blocked: the developer can prepare and retry');
+  await w.rootExec('jd_prepare');
+  await w.rootExec('jd_parity', { key: 'final', restatement: 'again' });
+  w.scripts['builder:N.1'] = async ({ exec, h, run: r }) => {
+    const other = { id: 'OTHER', session: { header: { cwd: w.session, delegationDepth: 1, origin: 'subagent' } } };
+    hub.byWorker.set('OTHER', h.key);
+    await assert.rejects(T.jd_submit.execute({ summary: 'x' }, { agent: other, signal: sig() }), /Only the worker assigned/);
+    fs.writeFileSync(path.join(r.state.settings.repos[0].workPath, 'greet.js'), 'export const greet = (n) => `Hello, ${n}!`;\n');
+    await exec('jd_submit', { summary: 'ok' });
+  };
+  const done = await runToEnd(w);
+  assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
+  await assert.rejects(w.rootExec('jd_ask', { question: 'late?' }), /No single questions after the final parity|already|done/);
 });

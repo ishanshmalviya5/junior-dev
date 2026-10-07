@@ -90,7 +90,7 @@ test('R3 Roll-up: parent done only after all children done AND its integration c
   const r = h.apply('reopen', 'N.1', 'bug found');
   assert.ok(r.ok);
   assert.equal(h.node('N.1').status, 'recheck');
-  assert.equal(h.node('N').status, 'recheck');
+  assert.equal(h.node('N').status, 'split', 'the parent left done and waits for its children again');
   assert.deepEqual(r.affected.sort(), ['N', 'N.1']);
 });
 
@@ -207,4 +207,28 @@ test('U7/S8.3: situation reports stuck when only parked items remain, done when 
   h.apply('startChecks', 'N');
   h.apply('recordChecks', 'N', []);
   assert.equal(situation(h.state.tree), 'done');
+});
+
+test('R3 (review #6): after a contract change the parent waits for the rechecked child before integrating', () => {
+  const h = base();
+  finish(h, 'N.1');
+  finish(h, 'N.2');
+  h.apply('changeContract', 'C:N.1:greet', { description: 'v2', byNodeId: 'N.1' });
+  // contract id in base() is C:N.1:greet()
+  h.apply('changeContract', 'C:N.1:greet()', { description: 'v2', byNodeId: 'N.1' });
+  assert.equal(h.node('N.2').status, 'recheck');
+  assert.equal(h.node('N').status, 'split');
+  assert.equal(next(h.state.tree).id, 'N.2', 'the child goes first');
+  assert.equal(h.apply('startChecks', 'N').ok, false);
+});
+
+test('E6 (review #7): a blocked dependency blocks its dependents, so the run can still finish the rest', () => {
+  const h = harness();
+  h.apply('init', { requirements: REQS });
+  h.apply('split', 'N', [leaf('a', ['N#A1'], ['A1']), leaf('b', ['N#A2'], ['A2'], { dependsOn: ['#1'] }), leaf('c', ['N#B1'], ['B1'])]);
+  h.apply('block', 'N.1', 'B1');
+  assert.equal(h.node('N.2').status, 'blocked');
+  assert.match(h.node('N.2').statusWhy, /depends on blocked N\.1/);
+  finish(h, 'N.3');
+  assert.equal(situation(h.state.tree), 'resolved');
 });

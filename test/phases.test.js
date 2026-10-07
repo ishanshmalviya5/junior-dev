@@ -91,6 +91,12 @@ function driveTo(target, { refuseFirst = true } = {}) {
       fs.appendFileSync(run.docPath('requirements'), '\n');
       if (refuseFirst) assert.match(run.advance('build').reasons.join(), /requirements changed after its parity yes/);
       run.parity('requirements', true);
+      // the final yes covers documents and settings: any change after it refuses the build
+      if (refuseFirst) assert.match(run.advance('build').reasons.join(), /final changed after its parity yes/);
+      run.parity('final', true);
+      run.set('dial', 'bold');
+      if (refuseFirst) assert.match(run.advance('build').reasons.join(), /final changed after its parity yes/);
+      run.parity('final', true);
     },
   };
   for (const ph of PHASES.slice(1, PHASES.indexOf(target) + 1)) {
@@ -166,7 +172,11 @@ test('U17: a developer message pauses at a checkpoint, resettles to the earliest
   assert.equal(pause(run.store, 'developer changed the export name').ok, true);
   assert.equal(run.state.side, 'paused');
   assert.match(run.advance('verify').reasons[0], /run is paused/);
-  assert.equal(resettle(run.store, 'requirements', { changedDocs: ['requirements'] }).ok, true);
+  // the developer's change edits the requirements; the agent asks to continue in build, the plugin moves it back
+  fs.writeFileSync(run.docPath('requirements'), REQUIREMENTS.replace('Hello, <name>!', 'Hi, <name>!'));
+  const r = resettle(run.store, 'build', { readDoc: (k) => run.readDoc(k) });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.changed, ['requirements']);
   assert.equal(run.state.phase, 'requirements');
   assert.equal(run.state.side, null);
   assert.equal(run.state.parity.requirements.yes, false);
@@ -212,3 +222,18 @@ test('U16: resume picker — none, direct, pick', () => {
   assert.equal(pick.mode, 'pick');
   assert.deepEqual(pick.items.map((i) => [i.name, i.side]), [['one', null], ['two', 'stopped']]);
 });
+
+test('J1/H1 (review #9): settings changed while paused send the run back to the final parity', () => {
+  const { run } = driveTo('build');
+  pause(run.store, 'developer allows pushing now');
+  run.set('permissions', { push: true, pr: false, remoteWrites: [], debugEnv: null });
+  const r = resettle(run.store, 'build', { readDoc: (k) => run.readDoc(k) });
+  assert.equal(r.phase, 'final_parity');
+  assert.equal(run.state.parity.final.yes, false);
+});
+
+test('C6 (review #13): a parity yes cannot be given before its document exists', () => {
+  const run = Run.create({ sessionFolder: tmpdir(), prdText: PRD });
+  assert.throws(() => run.parity('requirements', true), /does not exist yet/);
+});
+

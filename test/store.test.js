@@ -106,3 +106,14 @@ test('U5: a sequence gap in the log is detected', () => {
   fs.writeFileSync(p, lines.join('\n'));
   assert.throws(() => Store.open(dir), (e) => e.code === 'tamper');
 });
+
+test('J4/S1.6: an appended event with the right seq (e.g. forcing a node done) breaks the keyed chain', () => {
+  const dir = path.join(tmpdir(), 'state');
+  const s = Store.open(dir, { snapshotEvery: 2 });
+  s.commit('created', { name: 'f', sessionFolder: '/x', prdSha: 'a' });
+  s.commit('fact', { id: 'F1', text: 'x', source: 's' });
+  s.commit('fact', { id: 'F2', text: 'y', source: 's' });
+  const p = path.join(dir, 'events.jsonl');
+  fs.appendFileSync(p, JSON.stringify({ seq: 4, ts: 't', type: 'note', data: { kind: 'x', text: 'forged' } }) + '\n');
+  assert.throws(() => Store.open(dir), (e) => e.code === 'tamper' && /chain mismatch/.test(e.message));
+});
