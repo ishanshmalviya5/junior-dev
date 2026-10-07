@@ -1,0 +1,8 @@
+[
+  { "tool": "jd_status", "args": {} },
+  { "tool": "jd_start", "args": {} },
+  { "tool": "jd_fact", "args": { "text": "toy repo with index.js", "source": "ls" } },
+  { "tool": "jd_advance", "args": { "to": "interview" } },
+  { "tool": "jd_ask", "args": { "question": "Which greeting word should greet() use?", "header": "Greeting", "options": ["Hello", "Hi"], "recommended": "Hello" } },
+  { "text": "Recorded your answer." }
+]

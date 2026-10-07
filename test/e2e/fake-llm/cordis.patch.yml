@@ -1,0 +1,4 @@
+# TEST ONLY: scripted fake model for junior-dev's isolated e2e environment.
+- insert:
+    - id: jd-fake-llm
+      name: jd-fake-llm
