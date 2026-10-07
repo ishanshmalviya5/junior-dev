@@ -34,8 +34,8 @@ const root = [
   tool('jd_run'), { text: 'The build loop started; you can step away.' }, { text: 'REPORT RELAYED' },
 ];
 const workers = [
-  { match: '^You are a junior-dev builder[\\s\\S]*Your item: N\\.1 ', steps: [tool('bash', { command: "cd $WORKDIR && printf 'export const greet = (n) => `Hello, ${n}!`;\\n' > greet.js && cat greet.js" }), tool('jd_submit', { summary: 'greet.js added' }), { text: 'done' }] },
-  { match: '^You are a junior-dev builder[\\s\\S]*Your item: N\\.2 ', steps: [tool('bash', { command: "cd $WORKDIR && printf \"export { greet } from './greet.js';\\n\" > index.js" }), tool('bash', { command: 'git push origin HEAD' }), tool('jd_submit', { summary: 'export added' }), { text: 'done' }] },
+  { match: '^You are a junior-dev builder[\\s\\S]*Your item: N\\.1 ', steps: [tool('bash', { description: 'write greet.js', command: "cd $WORKDIR && printf 'export const greet = (n) => `Hello, ${n}!`;\\n' > greet.js && cat greet.js" }), tool('jd_submit', { summary: 'greet.js added' }), { text: 'done' }] },
+  { match: '^You are a junior-dev builder[\\s\\S]*Your item: N\\.2 ', steps: [tool('bash', { description: 'write index.js', command: "cd $WORKDIR && printf \"export { greet } from './greet.js';\\n\" > index.js" }), tool('bash', { description: 'try a push', command: 'git push origin HEAD' }), tool('jd_submit', { summary: 'export added' }), { text: 'done' }] },
 ];
 fs.writeFileSync(new URL('./script-full.json', import.meta.url), JSON.stringify({ root, workers }, null, 2));
 console.log(`script-full.json: ${root.length} root steps, ${workers.length} worker scripts`);

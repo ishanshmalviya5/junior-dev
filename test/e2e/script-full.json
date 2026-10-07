@@ -301,6 +301,7 @@
         {
           "tool": "bash",
           "args": {
+            "description": "write greet.js",
             "command": "cd $WORKDIR && printf 'export const greet = (n) => `Hello, ${n}!`;\\n' > greet.js && cat greet.js"
           }
         },
@@ -321,12 +322,14 @@
         {
           "tool": "bash",
           "args": {
+            "description": "write index.js",
             "command": "cd $WORKDIR && printf \"export { greet } from './greet.js';\\n\" > index.js"
           }
         },
         {
           "tool": "bash",
           "args": {
+            "description": "try a push",
             "command": "git push origin HEAD"
           }
         },
