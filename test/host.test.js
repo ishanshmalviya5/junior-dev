@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { hub } from '../lib/host/hub.js';
-import { rootTools, workerTools } from '../lib/host/tools.js';
+import { rootTools, workerTools, latestUserText } from '../lib/host/tools.js';
+import { toAskPayload } from '../lib/host/services.js';
 import { judge } from '../lib/host/gate.js';
 import { progressFor } from '../lib/index.js';
 import { Run } from '../lib/engine/run.js';
@@ -399,4 +400,16 @@ test('jd_* root tools refuse workers, and worker tools refuse the root', async (
   await assert.rejects(T.jd_submit.execute({ summary: 'x' }, { agent: w.root, signal: sig() }), /workers only/);
   await assert.rejects(w.rootExec('jd_run'), /No junior-dev run/);
   hub.overrides = null;
+});
+
+test('real-DSH regressions: the ask payload is lossless JSON; the PRD is the developer message, not injected context', () => {
+  const p = toAskPayload([{ id: 'Q1', question: 'x?', header: 'a very long header', detail: undefined, options: [{ label: 'A', description: undefined }, { label: 'B (Recommended)' }], multiSelect: false }]);
+  assert.deepEqual(p, [{ id: 'Q1', question: 'x?', header: 'a very long ', options: [{ label: 'A' }, { label: 'B (Recommended)' }] }]);
+  assert.equal(JSON.stringify(p).includes('undefined'), false);
+  const agent = { session: { deriveMessages: () => [
+    { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '# PRD\nBuild greet.' }] },
+    { role: 'user', source: { kind: 'runtime-context' }, content: [{ type: 'text', text: 'Current runtime context: this snapshot ...' }] },
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>x</system-reminder>' }] },
+  ] } };
+  assert.equal(latestUserText(agent), '# PRD\nBuild greet.');
 });
