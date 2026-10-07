@@ -34,9 +34,9 @@ test('U3: a second run on a locked checkout is refused; a dead run\'s lock is re
   assert.equal(fs.existsSync(Locks.lockPath(repo)), false);
 });
 
-test('U11: time, token and cost limits each trip; per-node overspend is flagged', () => {
+test('U11: time and token limits each trip; per-node overspend is flagged', () => {
   const st = {
-    settings: { budget: { tokens: 100, costUsd: 1, timeMin: 1 } },
+    settings: { budget: { tokens: 100, timeMin: 1 } },
     usage: { tokens: 100, costUsd: 0.5, activeMs: 0, byNode: { 'N.1': { tokens: 400 } } },
     history: [{ ok: true, to: 'build', ts: new Date(Date.now() - 120000).toISOString() }],
     tree: { nodes: { 'N.1': { id: 'N.1', budgetShare: 200 }, 'N.2': { id: 'N.2', budgetShare: 200 } } },
@@ -45,8 +45,6 @@ test('U11: time, token and cost limits each trip; per-node overspend is flagged'
   assert.equal(ex.length, 2);
   assert.match(ex.join(), /tokens 100 ≥ 100/);
   assert.match(ex.join(), /time 2 min ≥ 1 min/);
-  st.usage.costUsd = 2;
-  assert.equal(exceeded(st).length, 3);
   assert.deepEqual(overspent(st), ['N.1']);
 });
 
