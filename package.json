@@ -1,0 +1,46 @@
+{
+  "name": "junior-dev",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A DSH agent preset that takes a pasted PRD, interviews the developer to parity, then builds, verifies and delivers the feature unattended.",
+  "license": "UNLICENSED",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./engine": "./lib/engine/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "os": [
+    "darwin"
+  ],
+  "files": [
+    "lib",
+    "client/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
+    "check": "npm run lint && npm test"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}
