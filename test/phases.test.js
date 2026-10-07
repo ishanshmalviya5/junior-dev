@@ -12,8 +12,9 @@ import { tmpdir, gitRepo, PRD, REQUIREMENTS, VP, SPECS, PLAN } from './helpers.j
 function settle(run, repo) {
   run.set('repos', [{ path: repo, mode: 'in-place', branch: 'junior-dev/greet', workPath: repo, baseRef: G.head(repo) }]);
   run.set('permissions', { push: false, pr: false, remoteWrites: [], debugEnv: null });
-  run.set('budget', { timeMin: 60, tokens: 1e6, costUsd: 5 });
-  run.set('models', { planner: 'm', builder: 'm', checker: 'm', reviewer: 'm', writer: 'm' });
+  run.set('budget', { timeMin: 60, tokens: 1e6 });
+  const m = { provider: 'p', model: 'm' };
+  run.set('models', { planner: m, builder: m, checker: m, reviewer: m });
   run.set('crossModel', { enabled: false });
   run.set('dial', 'balanced');
 }
@@ -85,7 +86,7 @@ function driveTo(target, { refuseFirst = true } = {}) {
       settle(run, repo);
       run.parity('final', true);
       if (refuseFirst) assert.match(run.advance('build').reasons.join(), /no lock held/);
-      Locks.acquire(repo, { feature: run.name, sessionId: 'S1' });
+      Locks.acquire(repo, { feature: run.lockKey, sessionId: 'S1' });
       // editing a read doc after its parity yes re-requires parity
       fs.appendFileSync(run.docPath('requirements'), '\n');
       if (refuseFirst) assert.match(run.advance('build').reasons.join(), /requirements changed after its parity yes/);

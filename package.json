@@ -13,6 +13,7 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./tools": "./lib/tools-plugin.js",
     "./engine": "./lib/engine/index.js",
     "./client": "./client/client.js",
     "./package.json": "./package.json"
@@ -32,7 +33,8 @@
   "scripts": {
     "lint": "node scripts/lint.mjs",
     "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && npm test",
+    "gen:patch": "node scripts/gen-patch.mjs"
   },
   "dsh": {
     "manifestVersion": 1,
@@ -42,5 +44,8 @@
     "client": {
       "platform": "web"
     }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
   }
 }

@@ -19,8 +19,9 @@ test('U3: a second run on a locked checkout is refused; a dead run\'s lock is re
   const r = Locks.acquire(repo, { feature: 'b', sessionId: 'S2' });
   assert.equal(r.ok, false);
   assert.match(r.reason, /locked by run "a"/);
-  Locks.release(repo, { feature: 'b', sessionId: 'S2' });
-  assert.ok(Locks.holds(repo, { feature: 'a', sessionId: 'S1' }), 'non-owner cannot release');
+  Locks.release(repo, { feature: 'b' });
+  assert.ok(Locks.holds(repo, { feature: 'a' }), 'non-owner cannot release');
+  assert.ok(Locks.acquire(repo, { feature: 'a', sessionId: 'S9' }).ok, 'the same run resumed from another chat keeps its lock');
   // dead pid → stale
   fs.writeFileSync(Locks.lockPath(repo), JSON.stringify({ feature: 'a', sessionId: 'S1', pid: 999999, startedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString() }));
   const t = Locks.acquire(repo, { feature: 'b', sessionId: 'S2' });
@@ -29,7 +30,7 @@ test('U3: a second run on a locked checkout is refused; a dead run\'s lock is re
   fs.writeFileSync(Locks.lockPath(repo), JSON.stringify({ feature: 'a', sessionId: 'S1', pid: process.pid, startedAt: '2026-01-01T00:00:00Z', heartbeatAt: '2026-01-01T00:00:00Z' }));
   assert.ok(Locks.acquire(repo, { feature: 'c', sessionId: 'S3', sessionLive: () => false }).ok);
   assert.ok(Locks.heartbeat(repo, { feature: 'c', sessionId: 'S3' }));
-  Locks.release(repo, { feature: 'c', sessionId: 'S3' });
+  Locks.release(repo, { feature: 'c' });
   assert.equal(fs.existsSync(Locks.lockPath(repo)), false);
 });
 
