@@ -182,6 +182,8 @@ test('T2 + T10: scripted full run on one repo, intake → done; PRD verbatim; qu
   assert.equal(git(wt, 'status', '--porcelain'), '');
   assert.deepEqual(run.state.delivery.branches.map((b) => b.pushed), [false], 'no push permission: local branch');
   assert.equal(progressFor(w.root.id).phase, 'done');
+  const reg = JSON.parse(fs.readFileSync(path.join(process.env.JD_HOME, 'active.json'), 'utf8'));
+  assert.equal(reg[w.root.id], undefined, 'a finished run leaves the active list');
 });
 
 test('T3: a crash mid-build loses only the step in flight; invoking again resumes from the checkpoint', async () => {
