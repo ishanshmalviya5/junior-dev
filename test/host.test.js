@@ -65,6 +65,9 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
     async setFullAccess() {
       return true;
     },
+    subscriptionSettings() {
+      return { providers: ['fake', 'other'], subscriptionOnly: true, cascadingFallback: false };
+    },
     async tokensOf() {
       return 0;
     },
@@ -521,4 +524,45 @@ test('X1#8/#14/#15: jd_run before prepare is refused without blocking; no single
   const done = await runToEnd(w);
   assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
   await assert.rejects(w.rootExec('jd_ask', { question: 'late?' }), /No single questions after the final parity|already|done/);
+});
+
+test('spending guard: subscription models need the no-extra-credits guardrail; paid models need an explicit yes', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  hub.overrides.subscriptionSettings = () => ({ providers: ['fake'], subscriptionOnly: false, cascadingFallback: false });
+  await assert.rejects(w.settleToFinal(), /preflight|ok/);
+  const run = w.handle().run;
+  const spend = run.state.preflight.find((p) => p.id === 'spend:planner');
+  assert.equal(spend.ok, false);
+  assert.match(spend.detail, /Subscription only/);
+  hub.overrides.subscriptionSettings = () => ({ providers: [], subscriptionOnly: true, cascadingFallback: false });
+  const r = JSON.parse(await w.rootExec('jd_preflight', { items: [] }));
+  assert.equal(r.ok, false, 'a non-subscription (pay-per-token) model is refused without permission');
+  assert.match(r.results.find((x) => x.id === 'spend:builder').detail, /bills per token/);
+  hub.overrides.subscriptionSettings = () => ({ providers: ['fake'], subscriptionOnly: true, cascadingFallback: false });
+  assert.equal(JSON.parse(await w.rootExec('jd_preflight', { items: [] })).ok, true);
+});
+
+test('spending guard: "out of subscription" stops the run at once, undoes the attempt, and jd_run resumes later', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  let exhausted = true;
+  const n1 = w.scripts['builder:N.1'];
+  w.scripts['builder:N.1'] = async (c) => {
+    if (exhausted) {
+      fs.writeFileSync(path.join(c.run.state.settings.repos[0].workPath, 'partial.js'), 'x');
+      throw new Error('no usable subscription account for this provider');
+    }
+    return n1(c);
+  };
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  assert.equal(run.state.side, 'stopped');
+  assert.match(run.state.sideReason, /subscription limit reached — no extra credits were used/);
+  assert.equal(run.state.tree.nodes['N.1'].attempts, 0, 'not counted as a failed attempt');
+  assert.equal(w.calls.spawns.filter((s) => s.role === 'builder').length, 1, 'no retries against an exhausted subscription');
+  assert.equal(fs.existsSync(path.join(run.state.settings.repos[0].workPath, 'partial.js')), false);
+  exhausted = false;
+  const done = await runToEnd(w);
+  assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
 });
