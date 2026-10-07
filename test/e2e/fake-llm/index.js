@@ -39,13 +39,28 @@ export function apply(ctx) {
   ctx.on('llm/stream', async function* (options) {
     const msgs = options.messages ?? [];
     const system = [options.system ?? '', ...msgs.filter((m) => m.role === 'system').map(textOf)].join('\n');
-    const isRoot = system.includes('You are junior-dev');
-    if (!isRoot) {
-      yield* text('Test session');
-      return;
+    const firstUser = textOf(msgs.find((m) => m.role === 'user' && (!m.source || m.source.kind === 'user')) ?? {});
+    const sc = script();
+    const steps = Array.isArray(sc) ? sc : sc.root;
+    let list = null;
+    // workers: the first user message is the junior-dev brief; pick the matching worker script
+    for (const wk of (Array.isArray(sc) ? [] : sc.workers ?? [])) {
+      if (new RegExp(wk.match).test(firstUser)) {
+        list = wk.steps;
+        break;
+      }
+    }
+    if (!list) {
+      if (!system.includes('You are junior-dev')) {
+        yield* text('Test session');
+        return;
+      }
+      list = steps;
     }
     const turn = msgs.filter((m) => m.role === 'assistant').length;
-    const step = script()[turn];
+    let step = list[turn];
+    const workdir = firstUser.match(/Work in: ([^\s,]+)/)?.[1] ?? '.';
+    if (step) step = JSON.parse(JSON.stringify(step).replaceAll('$PROVIDER', options.provider).replaceAll('$MODEL', options.model).replaceAll('$WORKDIR', workdir));
     if (!step) {
       yield* text('(fake model: script finished)');
       return;
