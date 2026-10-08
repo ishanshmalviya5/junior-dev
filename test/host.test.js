@@ -576,3 +576,16 @@ test('R1 finding: jd_set and jd_tree accept JSON text as well as objects', async
   assert.deepEqual(st.budget, { timeMin: 30, tokens: 1500000 });
   assert.equal(st.dial, 'balanced');
 });
+
+test('R1 finding: a fixer that logs a blocker ends the fix loop for that check (no wasted rounds)', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  w.scripts.fixer = async ({ exec }) => exec('jd_block', { what: 'check command is broken', why: 'unfixable from code', how: 'ran it' });
+  await w.settleToFinal();
+  w.handle().run.store.commit('check_def', { ...w.handle().run.state.checks.U2, command: 'false' });
+  w.handle().run.parity('final', true);
+  const run = await runToEnd(w);
+  assert.equal(w.calls.spawns.filter((s) => s.role === 'fixer' && s.checkId === 'U2').length, 1);
+  assert.equal(run.state.blockers.filter((b) => b.checkId === 'U2').length, 1);
+  assert.equal(run.state.phase, 'done');
+});

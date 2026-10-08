@@ -161,3 +161,17 @@ test('U19: research facts keep their source; a developer override wins and is re
   assert.equal(f.source, 'package.json scripts.test');
   assert.equal(f.override.text, 'tests run with node --test');
 });
+
+test('R1 finding: table cells keep shell pipes inside code spans (`a || b`, escaped \\|)', async () => {
+  const { splitRow } = await import('../lib/engine/docs.js');
+  assert.deepEqual(splitRow('| U4 | automated | x | B1 | `node -e "if(a||b)process.exit(1)"` |'), ['U4', 'automated', 'x', 'B1', '`node -e "if(a||b)process.exit(1)"`']);
+  assert.deepEqual(splitRow('| a \\| b | c |'), ['a | b', 'c']);
+  const fs = await import('node:fs');
+  const md = fs.readFileSync(new URL('./fixtures-r1-verification-plan.md', import.meta.url), 'utf8');
+  const vp = parseVerificationPlan(md, ['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'C1', 'C2']);
+  assert.ok(vp.ok, vp.reasons.join('; '));
+  const u4 = vp.checks.find((c) => c.id === 'U4');
+  assert.match(u4.command, /a\.slugify!==b\.slugify\)process\.exit\(1\)\}\)"$/);
+  const u5 = vp.checks.find((c) => c.id === 'U5');
+  assert.match(u5.command, /p\.dependencies\|\|p\.devDependencies/);
+});
