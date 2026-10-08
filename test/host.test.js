@@ -566,3 +566,13 @@ test('spending guard: "out of subscription" stops the run at once, undoes the at
   const done = await runToEnd(w);
   assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
 });
+
+test('R1 finding: jd_set and jd_tree accept JSON text as well as objects', async () => {
+  const w = makeWorld({ human: false });
+  await w.rootExec('jd_start');
+  await w.rootExec('jd_set', { key: 'budget', value: '{"timeMin":30,"tokens":1500000}' });
+  await w.rootExec('jd_set', { key: 'dial', value: 'balanced' });
+  const st = w.handle().run.state.settings;
+  assert.deepEqual(st.budget, { timeMin: 30, tokens: 1500000 });
+  assert.equal(st.dial, 'balanced');
+});
