@@ -42,7 +42,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
   const worker = { id: `W-${path.basename(session)}`, session: { header: { cwd: session, delegationDepth: 1, origin: 'subagent', parentSession: root.id } } };
   const calls = { asks: [], notify: [], spawns: [] };
   const answers = { human: () => 'Pass' };
-  const scripts = {}; // role or nodeId → async (ctx) => void
+  const scripts = { reviewer: async () => '{"findings":[]}' }; // role or nodeId → async (ctx) => void
   hub.host = { logger: () => console };
   hub.overrides = {
     async ask(_h, questions) {
@@ -285,8 +285,68 @@ test('T7: cross-model verification runs in a fresh worker on the chosen model; f
   const rev = w.calls.spawns.filter((s) => s.role === 'reviewer');
   assert.equal(rev.length, 2);
   assert.deepEqual(rev[0].model, { provider: 'other', model: 'x' });
-  assert.ok(w.calls.spawns.some((s) => s.role === 'fixer' && s.checkId === 'XM1'));
-  assert.ok(run.state.notes.some((n) => n.kind === 'cross_model_done'));
+  assert.ok(w.calls.spawns.some((s) => s.role === 'fixer' && s.checkId === 'RV1'));
+  assert.ok(run.state.notes.some((n) => n.kind === 'review_done'));
+  assert.equal(run.state.phase, 'done');
+});
+
+test('v2-05: review runs without cross-model, on the checker model, once per repo', async () => {
+  const w = makeWorld({ repos: 2, human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  const rev = w.calls.spawns.filter((s) => s.role === 'reviewer');
+  assert.equal(rev.length, 2);
+  assert.deepEqual(rev[0].model, { provider: 'fake', model: 'm1' });
+  assert.equal(run.state.phase, 'done');
+});
+
+test('v2-05: both axes are reported separately in the report and the PR body', async () => {
+  const w = makeWorld({ human: false, push: true, pr: true });
+  honestBuilders(w);
+  w.scripts.reviewer = async () => '{"findings":[{"axis":"standards","problem":"swallowed error","where":"greet.js:1","severity":"low"},{"axis":"spec","kind":"scope creep","requirement":"A1","problem":"added a shout() helper","severity":"low"}]}';
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  const report = fs.readFileSync(path.join(run.dir, 'report.md'), 'utf8');
+  assert.match(report, /### Standards\n- repo1: \(low\) swallowed error/);
+  assert.match(report, /### Spec\n- repo1: \(low, scope creep\) added a shout\(\) helper/);
+  assert.ok(report.indexOf('### Standards') < report.indexOf('### Spec'));
+  const gh = fs.readFileSync(w.ghLog, 'utf8');
+  assert.match(gh, /### Standards/);
+  assert.match(gh, /### Spec/);
+});
+
+test('v2-05: a standards finding is routed to the fix loop; the reviewer brief lists the standards files', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  fs.writeFileSync(path.join(w.repoPaths[0], 'CLAUDE.md'), '# rules\n');
+  git(w.repoPaths[0], 'add', 'CLAUDE.md');
+  git(w.repoPaths[0], 'commit', '-q', '-m', 'add rules');
+  let reviews = 0;
+  const briefs = [];
+  w.scripts.reviewer = async ({ prompt }) => {
+    briefs.push(prompt);
+    return ++reviews === 1 ? '{"findings":[{"axis":"standards","problem":"breaks the naming rule","severity":"med"}]}' : '{"findings":[]}';
+  };
+  w.scripts.fixer = async ({ exec }) => exec('jd_submit', { summary: 'renamed' });
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  assert.ok(w.calls.spawns.some((s) => s.role === 'fixer' && s.checkId === 'RV1'));
+  assert.equal(reviews, 2);
+  assert.match(briefs[0], /standards files[^\n]*CLAUDE\.md/);
+  assert.equal(run.state.notes.filter((n) => n.kind === 'review_standards').length, 0);
+  assert.equal(run.state.phase, 'done');
+});
+
+test('v2-05: scope creep is reported, not fixed, and does not block delivery', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  w.scripts.reviewer = async () => '{"findings":[{"axis":"spec","kind":"scope creep","problem":"unrequested logging","severity":"low"}]}';
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  assert.ok(!w.calls.spawns.some((s) => s.role === 'fixer'));
+  assert.equal(run.state.notes.filter((n) => n.kind === 'review_spec').length, 1);
+  assert.equal(run.state.blockers.length, 0);
   assert.equal(run.state.phase, 'done');
 });
 
