@@ -625,3 +625,33 @@ test('U9/J4 (iOS research): the gate holds iOS uploads without permission and re
   for (const command of uploads) assert.equal(judgeAs('bash', { command }), null, `permitted: ${command}`);
   assert.match(judgeAs('mcp__xcode__XcodeWrite', { filePath: path.join(stateDir, 'events.jsonl'), content: '{}' })?.reason ?? '', /state is written only by the plugin/, 'no permission opens the state dir');
 });
+
+test('v2-02: every brief carries its role\'s practice skill, and no skill tells a worker to ask the user', async () => {
+  const { workerBrief, fixBrief, reviewBrief, SKILL_TEXT } = await import('../lib/host/prompts.js');
+  const run = { name: 'feat', dir: '/tmp/feat-docs' };
+  const node = { id: 'N.1', title: 't', goal: 'g', doneWhen: [{ id: 'N.1#1', text: 'works' }], traces: { requirements: ['A1'] }, checks: [], provides: [], uses: [] };
+  const base = { node, run, contracts: [], workPaths: ['/tmp/repo'] };
+  const brief = {
+    planner: workerBrief({ ...base, role: 'planner' }),
+    builder: workerBrief({ ...base, role: 'builder' }),
+    fixer: fixBrief({ run, check: { id: 'U1', kind: 'automated', requirementIds: ['A1'] }, output: 'boom', workPaths: ['/tmp/repo'] }),
+    reviewer: reviewBrief({ run, workPaths: ['/tmp/repo'], diffStat: 'a.js' }),
+  };
+  const expected = { planner: ['slicing'], builder: ['red-first-building', 'test-quality'], fixer: ['debugging'], reviewer: ['review-axes'] };
+  for (const [role, names] of Object.entries(expected)) {
+    for (const n of names) assert.ok(brief[role].includes(SKILL_TEXT[n]), `${role} brief contains ${n}`);
+    for (const n of Object.keys(SKILL_TEXT)) if (!names.includes(n)) assert.ok(!brief[role].includes(SKILL_TEXT[n]), `${role} brief omits ${n}`);
+  }
+  const dir = path.join(import.meta.dirname, '..', 'skills');
+  const names = fs.readdirSync(dir);
+  assert.deepEqual(names.sort(), Object.keys(SKILL_TEXT).sort());
+  for (const n of names) {
+    const raw = fs.readFileSync(path.join(dir, n, 'SKILL.md'), 'utf8');
+    const fm = /^---\n([\s\S]*?)\n---\n/.exec(raw)?.[1] ?? '';
+    assert.match(fm, new RegExp(`^name: ${n}$`, 'm'));
+    assert.match(n, /^[a-z]+(-[a-z]+)*$/);
+    assert.match(fm, /^description: \S/m);
+    assert.doesNotMatch(raw.replace(/(cannot|never) ask/gi, ""), /ask[_ ](the )?(user|developer|human)|ask_user_question|quiz the user/i, `${n} never tells a worker to ask`);
+  }
+  assert.ok(fs.existsSync(path.join(dir, '..', 'CREDITS.md')));
+});

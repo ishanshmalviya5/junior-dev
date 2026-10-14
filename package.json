@@ -28,6 +28,8 @@
     "lib",
     "client/client.js",
     "cordis.patch.yml",
+    "skills",
+    "CREDITS.md",
     "README.md"
   ],
   "scripts": {
