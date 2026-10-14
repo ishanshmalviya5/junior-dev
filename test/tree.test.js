@@ -259,3 +259,18 @@ test('v2-03 U-check: setChecks rewrites a working leaf\'s checks only', () => {
   assert.ok(h.apply('setChecks', 'N.1', [{ command: 'false' }]).ok);
   assert.equal(h.node('N.1').checks[0].command, 'false');
 });
+
+test('U6b (v2-09): leaf checks accept the tool form (structured or text); a tool check with no pass rule is refused', () => {
+  const h = harness();
+  assert.ok(h.apply('init', { requirements: REQS, title: 'F' }).ok);
+  const bad = h.apply('split', 'N', [leaf('all', ['N#A1', 'N#A2', 'N#B1'], REQS, { checks: [{ tool: 'xcode_build', arguments: {} }] })]);
+  assert.ok(!bad.ok);
+  assert.match(bad.reasons.join(), /no pass rule/);
+  const r = h.apply('split', 'N', [
+    leaf('all', ['N#A1', 'N#A2', 'N#B1'], REQS, { checks: [{ tool: 'xcode_build', arguments: { scheme: 'App' }, pass: 'build_ok' }, { command: 'tool:xcode_test {} pass:tests_ok' }] }),
+  ]);
+  assert.ok(r.ok, r.reasons?.join('; '));
+  const [a, b] = h.node('N.1').checks;
+  assert.deepEqual([a.tool, a.arguments, a.pass, a.command], ['xcode_build', { scheme: 'App' }, 'build_ok', null]);
+  assert.deepEqual([b.tool, b.pass], ['xcode_test', 'tests_ok']);
+});

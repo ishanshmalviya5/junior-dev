@@ -249,3 +249,24 @@ test('R1 finding: table cells keep shell pipes inside code spans (`a || b`, esca
   const u5 = vp.checks.find((c) => c.id === 'U5');
   assert.match(u5.command, /p\.dependencies\|\|p\.devDependencies/);
 });
+
+test('U14b (v2-09): plan validators accept and trace tool checks, and reject one with no pass rule', () => {
+  const r = parseRequirements(REQUIREMENTS);
+  const tool = '`tool:xcode_build {"scheme":"App","a|b":1} pass:build_ok`';
+  const vpMd = VP.replace('`node --test`', tool);
+  const vp = parseVerificationPlan(vpMd, r.ids);
+  assert.ok(vp.ok, vp.reasons.join());
+  const u1 = vp.checks.find((c) => c.id === 'U1');
+  assert.equal(u1.command, null);
+  assert.deepEqual([u1.tool, u1.arguments, u1.pass], ['xcode_build', { scheme: 'App', 'a|b': 1 }, 'build_ok']);
+  assert.deepEqual(u1.proves, ['A1', 'A2'], 'still traced');
+  const noRule = parseVerificationPlan(vpMd.replace(' pass:build_ok', ''), r.ids);
+  assert.ok(!noRule.ok);
+  assert.match(noRule.reasons.join(), /U1: tool check "xcode_build" has no pass rule/);
+  assert.match(parseVerificationPlan(vpMd.replace('{"scheme"', '{scheme'), r.ids).reasons.join(), /not valid JSON/);
+  const pl = parsePlan(PLAN.replace(/^\| U2 \|.*$/m, `| U2 | ${tool.replace('xcode_build', 'xcode_test')} | |`), ['S1', 'S2'], ['U1', 'U2', 'H1']);
+  assert.ok(pl.ok, pl.reasons.join());
+  assert.equal(pl.commands.U2.tool, 'xcode_test');
+  assert.equal(pl.commands.U2.command, null);
+  assert.ok(!parsePlan(PLAN.replace(/^\| U2 \|.*$/m, '| U2 | `tool:xcode_test {}` | |'), ['S1', 'S2'], ['U1', 'U2', 'H1']).ok);
+});

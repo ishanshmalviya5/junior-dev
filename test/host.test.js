@@ -1013,7 +1013,7 @@ test('v2-08: matchProfiles picks profiles from marker sets (pure)', async () => 
   assert.deepEqual(matchProfiles([]), []);
   const twin = { ...PROFILES[0], name: 'ts2' };
   assert.deepEqual(matchProfiles(['package.json', 'tsconfig.json'], [PROFILES[0], twin]), ['ts', 'ts2']);
-  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'readiness', 'timeouts'].sort());
+  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'passRules', 'readiness', 'timeouts'].sort());
 });
 
 test('v2-08: a TS toy repo is detected when repos are set, and named in the next-step text; default checks come from package.json scripts', async () => {
@@ -1078,4 +1078,60 @@ test('v2-08: TS guidance is in worker briefs of TS repos only; an ambiguous repo
   const note = stacksNote({ '/r': { profile: null, candidates: ['ts', 'ios'], checks: [] } });
   assert.match(note, /ambiguous \(ts or ios\).*ONE jd_ask question/);
   await assert.rejects(() => w.rootExec('jd_set', { key: 'stacks', value: { [w.repoPaths[0]]: 'cobol' } }), /unknown profile/);
+});
+
+// ---------------------------------------------------------------- v2-09 tool-call checks
+test('v2-09: a tool check is called by the plugin and judged by the profile pass rule; evidence records the result', async () => {
+  const { PROFILES } = await import('../lib/profiles/index.js');
+  const { runAnyCheck } = await import('../lib/host/run-check.js');
+  const testProfile = { name: 'v209', markers: { all: ['nope.v209'] }, passRules: { built: (r) => ({ ok: r?.status === 'ok', output: `status ${r?.status}` }), boom: () => { throw new Error('rule exploded'); } } };
+  PROFILES.push(testProfile);
+  const w = makeWorld({ human: false });
+  const calls = [];
+  let result = { status: 'ok', errors: 0 };
+  hub.overrides.executeTool = async (_h, c) => {
+    calls.push(c);
+    if (c.name === 'missing_tool') throw new Error('unknown tool missing_tool');
+    return result;
+  };
+  try {
+    const h = w.handle();
+    const ok = await runAnyCheck(h, { id: 'U9', tool: 'build_it', arguments: { scheme: 'App' }, pass: 'built' }, {});
+    assert.equal(ok.ok, true);
+    assert.match(ok.output, /\{"status":"ok","errors":0\}/);
+    assert.deepEqual(calls[0].arguments, { scheme: 'App' });
+    assert.equal(calls[0].name, 'build_it');
+    result = { status: 'failed', errors: 2 };
+    const bad = await runAnyCheck(h, { tool: 'build_it', arguments: {}, pass: 'built' }, {});
+    assert.equal(bad.ok, false);
+    assert.match(bad.output, /"status":"failed"[\s\S]*status failed/);
+    assert.match((await runAnyCheck(h, { tool: 'missing_tool', arguments: {}, pass: 'built' }, {})).output, /unknown tool missing_tool/);
+    assert.match((await runAnyCheck(h, { tool: 'build_it', arguments: {}, pass: 'nope' }, {})).output, /unknown pass rule "nope"/);
+    assert.match((await runAnyCheck(h, { tool: 'build_it', arguments: {}, pass: 'boom' }, {})).output, /rule exploded/);
+    assert.equal((await runAnyCheck(h, { tool: 'build_it', arguments: {} }, {})).ok, false);
+    assert.equal((await runAnyCheck(h, { command: 'true' }, { cwd: process.cwd() })).ok, true, 'shell checks still run');
+  } finally {
+    PROFILES.splice(PROFILES.indexOf(testProfile), 1);
+    delete hub.overrides.executeTool;
+  }
+});
+
+test('v2-09: tool checks also work on the jd_preflight path', async () => {
+  const { PROFILES } = await import('../lib/profiles/index.js');
+  const testProfile = { name: 'v209b', markers: { all: ['nope.v209'] }, passRules: { built: (r) => ({ ok: r?.status === 'ok', output: '' }) } };
+  PROFILES.push(testProfile);
+  let status = 'ok';
+  const w = makeWorld({ human: false });
+  hub.overrides.executeTool = async () => ({ status });
+  try {
+    await w.rootExec('jd_start');
+    const pf = JSON.parse(await w.rootExec('jd_preflight', { items: [{ id: 'pfx', what: 'build works', tool: 'build_it', arguments: {}, pass: 'built' }] }));
+    assert.equal(pf.results.find((x) => x.id === 'pfx').ok, true);
+    status = 'bad';
+    const pf2 = JSON.parse(await w.rootExec('jd_preflight', { items: [{ id: 'pfy', what: 'build works', tool: 'build_it', arguments: {}, pass: 'built' }] }));
+    assert.equal(pf2.results.find((x) => x.id === 'pfy').ok, false);
+  } finally {
+    PROFILES.splice(PROFILES.indexOf(testProfile), 1);
+    delete hub.overrides.executeTool;
+  }
 });
