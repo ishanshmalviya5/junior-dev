@@ -123,6 +123,7 @@ test('U15: the report has every section, for done, stopped and blocked endings, 
   run.recordCheck('U1', { ok: true, output: 'pass', commit: 'abcdef1234' });
   run.blocker({ nodeId: 'N.2', what: 'export blocked', why: 'missing access', how: 'preflight', fixes: ['grant access'] });
   run.decide({ what: 'lib', choice: 'none', change: { nodeId: 'N.1' }, proof: { source: true, test: true } });
+  run.note('suggestion', 'repo1: add a typecheck script');
   for (const [side, re] of [[null, /ending: \*\*in progress/], ['stopped', /ending: \*\*stopped/], ['blocked', /ending: \*\*blocked/]]) {
     if (side) run.store.commit('side', { side, reason: 'x' });
     const md = run.writeReport();
@@ -131,6 +132,9 @@ test('U15: the report has every section, for done, stopped and blocked endings, 
     assert.match(md, /\| A1 \| U1 \| automated \| pass \| abcdef12/);
     assert.match(md, /\| B1 \| H1 \| human \| not run/);
     assert.match(md, /export blocked/);
+    assert.match(md, /## Risk\nLow: every call is inside one leaf, every call can be undone\./);
+    assert.ok(md.trimEnd().split('\n## ').at(-1).startsWith('Suggestions for your repo'), 'suggestions come last');
+    assert.match(md, /- repo1: add a typecheck script/);
     assert.ok(fs.existsSync(path.join(run.dir, 'report.md')));
     assert.ok(fs.existsSync(path.join(run.dir, 'ledger.md')));
   }

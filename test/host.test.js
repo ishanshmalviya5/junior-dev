@@ -319,6 +319,21 @@ test('v2-05: both axes are reported separately in the report and the PR body', a
   assert.match(gh, /### Spec/);
 });
 
+test('v2-06: the PR body has the risk call and review findings but never the suggestions; the report ends with them', async () => {
+  const w = makeWorld({ human: false, push: true, pr: true });
+  honestBuilders(w);
+  w.scripts.reviewer = async () => '{"findings":[{"axis":"standards","problem":"swallowed error","severity":"low"}],"suggestions":["no typecheck script"]}';
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  const report = fs.readFileSync(path.join(run.dir, 'report.md'), 'utf8');
+  assert.match(report, /## Risk\n(Low|Medium): /);
+  assert.match(report, /## Suggestions for your repo\n[^\n]*\n- repo1: no typecheck script\n$/);
+  const gh = fs.readFileSync(w.ghLog, 'utf8');
+  assert.match(gh, /## Risk/);
+  assert.match(gh, /swallowed error/);
+  assert.doesNotMatch(gh, /typecheck|Suggestions/);
+});
+
 test('v2-05: a standards finding is routed to the fix loop; the reviewer brief lists the standards files', async () => {
   const w = makeWorld({ human: false });
   honestBuilders(w);
