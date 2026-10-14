@@ -19,8 +19,8 @@ function tree() {
       s.tree,
       'N',
       [
-        { title: 'a', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, checks: [{ command: 'true' }], provides: [{ name: 'api' }] },
-        { title: 'b', doneWhen: ['y'], covers: ['N#B1'], traces: { requirements: ['B1'] }, checks: [{ command: 'true' }], uses: ['C:N.1:api'] },
+        { title: 'a', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, kind: 'behaviour', checks: [{ command: 'true' }], provides: [{ name: 'api' }] },
+        { title: 'b', doneWhen: ['y'], covers: ['N#B1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: 'true' }], uses: ['C:N.1:api'] },
       ],
       ctx,
     ),
@@ -66,8 +66,8 @@ test('U8/J10: below the bar the run parks the node and queues the question; answ
   run.store.commit('doc', { key: 'requirements', sha: 'x', ids: ['A1', 'B1'] });
   run.tree('init', { requirements: ['A1', 'B1'] });
   run.tree('split', 'N', [
-    { title: 'a', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, checks: [{ command: 'true' }] },
-    { title: 'b', doneWhen: ['y'], covers: ['N#B1'], traces: { requirements: ['B1'] }, checks: [{ command: 'true' }] },
+    { title: 'a', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
+    { title: 'b', doneWhen: ['y'], covers: ['N#B1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
   ]);
   run.set('dial', 'careful');
   const rec = run.decide({ what: 'which date lib', choice: 'none', options: ['none', 'luxon'], change: { nodeId: 'N.1' }, proof: { source: true }, question: 'Use a date library?' });

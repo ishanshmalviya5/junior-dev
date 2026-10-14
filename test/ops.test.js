@@ -84,8 +84,8 @@ function runWithTree(fixCap = 3) {
   run.set('fixCap', fixCap);
   run.tree('init', { requirements: ['A1', 'B1'], title: 'greet' });
   run.tree('split', 'N', [
-    { title: 'core', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, checks: [{ command: 'true' }] },
-    { title: 'export', doneWhen: ['y'], covers: ['N#B1'], traces: { requirements: ['B1'] }, checks: [{ command: 'true' }] },
+    { title: 'core', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
+    { title: 'export', doneWhen: ['y'], covers: ['N#B1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
   ]);
   return run;
 }
@@ -148,8 +148,8 @@ test('U18: progress checklist and bar are correct, and a step back is marked whe
   assert.deepEqual(p.bar, { done: 1, total: 2, pct: 50 });
   run.tree('claim', 'N.2', 'W');
   run.tree('split', 'N.2', [
-    { title: 'x', doneWhen: ['a'], covers: ['N.2#c1'], traces: { requirements: ['B1'] }, checks: [{ command: 'true' }] },
-    { title: 'y', doneWhen: ['b'], covers: ['N.2#c1'], traces: { requirements: ['B1'] }, checks: [{ command: 'true' }] },
+    { title: 'x', doneWhen: ['a'], covers: ['N.2#c1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
+    { title: 'y', doneWhen: ['b'], covers: ['N.2#c1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
   ]);
   p = run.progress();
   assert.deepEqual(p.bar, { done: 1, total: 3, pct: 33 });

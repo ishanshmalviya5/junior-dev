@@ -66,8 +66,8 @@ function driveTo(target, { refuseFirst = true } = {}) {
       assert.ok(run.tree('init', { requirements: run.requirementIds(), title: 'greet' }).ok);
       assert.ok(
         run.tree('split', 'N', [
-          { title: 'greet', doneWhen: ['works'], covers: ['N#A1', 'N#A2'], traces: { requirements: ['A1', 'A2'] }, checks: [{ command: 'true' }] },
-          { title: 'export', doneWhen: ['exported'], covers: ['N#B1'], traces: { requirements: ['B1'] }, checks: [{ command: 'true' }], dependsOn: ['#1'] },
+          { title: 'greet', doneWhen: ['works'], covers: ['N#A1', 'N#A2'], traces: { requirements: ['A1', 'A2'] }, kind: 'behaviour', checks: [{ command: 'true' }] },
+          { title: 'export', doneWhen: ['exported'], covers: ['N#B1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: 'true' }], dependsOn: ['#1'] },
         ]).ok,
       );
     },

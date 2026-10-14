@@ -26,8 +26,8 @@ const root = [
   tool('jd_advance', { to: 'implementation_plan' }), tool('jd_write_doc', { key: 'implementationPlan', content: '# Plan\n| Step | Work | Specs | Checks |\n|---|---|---|---|\n| P1 | greet | S1 | U1 |\n| P2 | export | S2 | U2 |\n' }),
   tool('jd_tree', { op: 'init' }),
   tool('jd_tree', { op: 'split', nodeId: 'N', children: [
-    { title: 'greet()', doneWhen: ['greet returns the greeting'], covers: ['N#A1'], traces: { requirements: ['A1'] }, checks: [{ command: greetCheck, cwd: toy }], provides: [{ name: 'greet', description: 'greet(name): string' }] },
-    { title: 'export', doneWhen: ['index.js exports greet'], covers: ['N#B1'], traces: { requirements: ['B1'] }, checks: [{ command: exportCheck, cwd: toy }], dependsOn: ['#1'], uses: ['C:N.1:greet'] },
+    { title: 'greet()', doneWhen: ['greet returns the greeting'], covers: ['N#A1'], traces: { requirements: ['A1'] }, kind: 'behaviour', checks: [{ command: greetCheck, cwd: toy }], provides: [{ name: 'greet', description: 'greet(name): string' }] },
+    { title: 'export', doneWhen: ['index.js exports greet'], covers: ['N#B1'], traces: { requirements: ['B1'] }, kind: 'behaviour', checks: [{ command: exportCheck, cwd: toy }], dependsOn: ['#1'], uses: ['C:N.1:greet'] },
   ] }),
   tool('jd_advance', { to: 'preflight' }), tool('jd_preflight', { items: [{ what: 'node runs', command: 'node --version' }] }),
   tool('jd_advance', { to: 'final_parity' }), tool('jd_prepare'), tool('jd_parity', { key: 'final', restatement: 'Build greet + export in a worktree, no push.' }),

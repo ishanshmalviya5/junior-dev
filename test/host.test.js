@@ -124,8 +124,8 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
         op: 'split',
         nodeId: 'N',
         children: [
-          { title: 'greet()', doneWhen: ['greet returns the greeting'], covers: ['N#A1'], traces: { requirements: ['A1'], checks: ['U1'] }, checks: [{ command: greetCheck, cwd: r1 }], provides: [{ name: 'greet', description: 'greet(name): string' }], risk: 'high' },
-          { title: 'export', doneWhen: ['index.js exports greet'], covers: ['N#B1'], traces: { requirements: ['B1'], checks: ['U2'] }, checks: [{ command: exportCheck, cwd: r1 }], dependsOn: ['#1'], uses: ['C:N.1:greet'] },
+          { title: 'greet()', doneWhen: ['greet returns the greeting'], covers: ['N#A1'], traces: { requirements: ['A1'], checks: ['U1'] }, kind: 'behaviour', checks: [{ command: greetCheck, cwd: r1 }], provides: [{ name: 'greet', description: 'greet(name): string' }], risk: 'high' },
+          { title: 'export', doneWhen: ['index.js exports greet'], covers: ['N#B1'], traces: { requirements: ['B1'], checks: ['U2'] }, kind: 'behaviour', checks: [{ command: exportCheck, cwd: r1 }], dependsOn: ['#1'], uses: ['C:N.1:greet'] },
         ],
       }),
     );
@@ -744,4 +744,69 @@ test('v2-07: briefs point workers at the repo glossary when it has one, and the 
   assert.match(PROTOCOL, /design-tree order/);
   assert.match(PROTOCOL, /GLOSSARY\.md.*CONTEXT\.md.*adr/s);
   assert.match(PROTOCOL, /never create them/);
+});
+
+/** Replace fields of a leaf directly in the store (test setup only). */
+function setLeaf(run, id, patch) {
+  run.store.commit('tree', { op: 'test', patch: { nodes: { [id]: { ...run.state.tree.nodes[id], ...patch } } }, affected: [id] });
+}
+
+test('v2-03: an already-green behaviour leaf goes back to the planner once, then parks with a queued question', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  setLeaf(w.handle().run, 'N.1', { checks: [{ id: 'N.1/k1', command: 'true', cwd: null }] });
+  const order = [];
+  const n1 = w.scripts['builder:N.1'];
+  w.scripts['planner:N.1'] = async () => order.push('planner');
+  w.scripts['builder:N.1'] = async (c) => {
+    order.push(`builder(queue=${c.run.state.queue.length})`);
+    return n1(c);
+  };
+  const run = await runToEnd(w);
+  assert.equal(w.calls.spawns.filter((s) => s.role === 'planner' && s.nodeId === 'N.1').length, 1, 'replanned exactly once');
+  const ev = run.state.leafEvidence['N.1'];
+  assert.equal(ev.replans, 1);
+  assert.equal(ev.parks, 1);
+  assert.equal(ev.before.ok, true);
+  assert.match(run.state.queue[0].text, /behaviour leaf.*already passes/);
+  assert.ok(w.calls.asks.some((ids) => ids.includes('QQ:QQ1')));
+  assert.deepEqual(order, ['planner', 'builder(queue=1)'], 'the builder starts only after the question was queued and answered');
+  assert.equal(run.state.phase, 'done');
+});
+
+test('v2-03: a refactor leaf that is red before the work is refused (parked with a reason) and no builder starts first', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  setLeaf(w.handle().run, 'N.1', { leafKind: 'refactor' }); // greet.js does not exist yet, so its check is red
+  const n1 = w.scripts['builder:N.1'];
+  let queuedWhenBuilt = -1;
+  w.scripts['builder:N.1'] = async (c) => {
+    queuedWhenBuilt = c.run.state.queue.length;
+    return n1(c);
+  };
+  const run = await runToEnd(w);
+  assert.equal(queuedWhenBuilt, 1, 'the refusal was queued before any builder ran');
+  assert.match(run.state.queue[0].text, /refactor leaf.*already fail/);
+  assert.equal(run.state.leafEvidence['N.1'].before.ok, false);
+  assert.ok(w.calls.asks.some((ids) => ids.includes('QQ:QQ1')));
+});
+
+test('v2-03: report.md shows red → green per behaviour leaf and green → green per refactor leaf', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run0 = w.handle().run;
+  const work = run0.state.settings.repos[0].workPath;
+  fs.writeFileSync(path.join(work, 'greet.js'), 'export const greet = (n) => `Hello, ${n}!`;\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'pre');
+  setLeaf(run0, 'N.1', { leafKind: 'refactor' }); // already green
+  const run = await runToEnd(w);
+  const report = fs.readFileSync(path.join(run.dir, 'report.md'), 'utf8');
+  assert.match(report, /## Red-first evidence/);
+  assert.match(report, /N\.1 greet\(\) \[refactor\]: green → green/);
+  assert.match(report, /N\.2 export \[behaviour\]: red → green/);
+  assert.equal(run.state.phase, 'done');
 });
