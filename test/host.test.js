@@ -849,6 +849,26 @@ test('v2-10: preflight fails a bundle the adapter says is not loaded; the report
   assert.match(report, /my-tool.*remove_bundle my-tool/);
 });
 
+test('v2-10: bundleLoaded queries Config.listConfigs with the real cordis_inspect_query shape', async () => {
+  const w = makeWorld({ human: false });
+  const calls = [];
+  let entries = [{ id: 'a', patchId: 'a', name: 'my-tool', status: 'schema' }];
+  hub.overrides.executeTool = async (_h, c) => {
+    calls.push(c);
+    return { platform: 'host', provider: 'Config', method: 'listConfigs', data: { entries, total: entries.length, nextOffset: null } };
+  };
+  const S = await import('../lib/host/services.js');
+  const h = w.handle();
+  assert.deepEqual(await S.bundleLoaded(h, { name: 'my-tool' }), { ok: true, detail: '' });
+  assert.equal(calls[0].name, 'cordis_inspect_query');
+  assert.deepEqual(calls[0].arguments, { platform: 'host', provider: 'Config', method: 'listConfigs', input: { name: 'my-tool', limit: 100 } });
+  entries = [{ id: 'a', patchId: 'a', name: 'my-tool', status: 'inactive' }];
+  assert.match((await S.bundleLoaded(h, { name: 'my-tool' })).detail, /inactive/);
+  entries = [];
+  assert.match((await S.bundleLoaded(h, { name: 'my-tool' })).detail, /not in the running plugin tree/);
+  delete hub.overrides.executeTool;
+});
+
 test('v2-10: the generated patch has Creator mode\'s three rows and the protocol rule', () => {
   const y = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
   assert.match(y, /id: tool-cordis\n\s+name: '@deepseek-ai\/dsh-tool-cordis'/);
