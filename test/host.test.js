@@ -11,6 +11,7 @@ import { toAskPayload } from '../lib/host/services.js';
 import { judge } from '../lib/host/gate.js';
 import { progressFor } from '../lib/index.js';
 import { Run } from '../lib/engine/run.js';
+import { renderReport } from '../lib/engine/report.js';
 import { tmpdir, gitRepo } from './helpers.js';
 
 process.env.JD_WORKTREES_ROOT = tmpdir('jd-wt-');
@@ -809,4 +810,44 @@ test('v2-03: report.md shows red → green per behaviour leaf and green → gree
   assert.match(report, /N\.1 greet\(\) \[refactor\]: green → green/);
   assert.match(report, /N\.2 export \[behaviour\]: red → green/);
   assert.equal(run.state.phase, 'done');
+});
+
+test('v2-10: the gate denies plugin_manager for workers, and for the root agent from the build on, but not before', async () => {
+  const w = makeWorld({ human: false });
+  await w.rootExec('jd_start');
+  const h = w.handle();
+  const asRoot = () => judge({ name: 'plugin_manager', arguments: { action: 'install_bundle' }, agent: w.root }, h);
+  assert.equal(asRoot(), null, 'allowed for root in the interview');
+  assert.match(judge({ name: 'plugin_manager', arguments: {}, agent: w.worker }, h)?.reason ?? '', /queue a question/);
+  for (const phase of ['build', 'verify', 'human_checks', 'deliver']) {
+    h.run.state.phase = phase;
+    assert.match(asRoot()?.reason ?? '', /queue a question/, phase);
+  }
+});
+
+test('v2-10: preflight fails a bundle the adapter says is not loaded; the report lists bundles and how to remove them', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  hub.overrides.bundleLoaded = async (_h, b) => ({ ok: false, detail: `${b.name} missing` });
+  await w.rootExec('jd_start');
+  await w.rootExec('jd_set', { key: 'bundles', value: JSON.stringify([{ name: 'my-tool', path: 'docs/f/plugins/my-tool' }]) });
+  const r = JSON.parse(await w.rootExec('jd_preflight', { items: [] }));
+  const e = r.results.find((x) => x.id === 'bundle:my-tool');
+  assert.equal(e.ok, false);
+  assert.match(e.detail, /missing/);
+  hub.overrides.bundleLoaded = async () => ({ ok: true, detail: '' });
+  assert.equal(JSON.parse(await w.rootExec('jd_preflight', { items: [] })).results.find((x) => x.id === 'bundle:my-tool').ok, true);
+  const report = renderReport(w.handle().run.state);
+  assert.match(report, /## Installed plugin bundles/);
+  assert.match(report, /my-tool.*remove_bundle my-tool/);
+});
+
+test('v2-10: the generated patch has Creator mode\'s three rows and the protocol rule', () => {
+  const y = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+  assert.match(y, /id: tool-cordis\n\s+name: '@deepseek-ai\/dsh-tool-cordis'/);
+  assert.match(y, /dsh-agent-preset\/package\.json/);
+  assert.match(y, /junior-dev\/package\.json/);
+  assert.match(y, /disabled: !!js "!ctx\.get\('profileContext'\)"/);
+  assert.doesNotMatch(y, /dsh-plugin-manager\/tools'\n\s+disabled: true/);
+  assert.match(y, /plugin_manager install_bundle/);
 });

@@ -34,7 +34,8 @@
                 9. Write junior-dev documents only with jd_write_doc and fix every reason it returns.
                 10. If a repo already keeps a glossary or ADRs, new terms or hard-to-reverse decisions settled in the interview become requirements and plan leaves that update those files, so the PR carries them. If it keeps none, never create them.
                 11. Once the build loop runs (jd_run), do not do the work yourself and do not ask anything. If the developer sends a message about a change, call jd_pause, settle the change with them, update the documents, call jd_resettle, then jd_run.
-                12. When the loop sends you its report, relay it to the developer in full.
+                12. If a capability is missing, you may build a DSH bundle under docs/<feature>/plugins/<name>/ (follow the cordis-plugin-development skill) and install it with plugin_manager install_bundle before final parity, then record it with jd_fact and jd_set bundles. Never during the loop.
+                13. When the loop sends you its report, relay it to the developer in full.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -58,6 +59,7 @@
             config:
               customSkillDirs:
                 - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('junior-dev/package.json')), 'skills')
+                - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
           - id: command-goal
@@ -166,8 +168,10 @@
               searchTimeoutMs: 60000
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-cordis
+            name: '@deepseek-ai/dsh-tool-cordis'
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
-            disabled: true
+            disabled: !!js "!ctx.get('profileContext')"
           - id: junior-dev-tools
             name: junior-dev/tools
