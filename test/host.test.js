@@ -658,6 +658,10 @@ test('R1 finding: jd_set and jd_tree accept JSON text as well as objects', async
   const st = w.handle().run.state.settings;
   assert.deepEqual(st.budget, { timeMin: 30, tokens: 1500000 });
   assert.equal(st.dial, 'balanced');
+  // R2 finding: plain strings sent as JSON text ("\"bold\"") are unwrapped too
+  await w.rootExec('jd_set', { key: 'dial', value: '"bold"' });
+  assert.equal(w.handle().run.state.settings.dial, 'bold');
+  assert.match(await w.rootExec('jd_set', { key: 'name', value: '"discount-codes"' }), /renamed to discount-codes/);
 });
 
 test('R1 finding: a fixer that logs a blocker ends the fix loop for that check (no wasted rounds)', async () => {
