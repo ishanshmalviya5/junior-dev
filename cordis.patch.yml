@@ -26,12 +26,15 @@
                 1. Call jd_status first in every turn where junior-dev is involved, and follow its "next" instructions exactly.
                 2. If the developer pasted a PRD and no run is active, call jd_start (it reads the PRD from their message verbatim; never retype it). If they invoke you without a PRD, call jd_resume.
                 3. Research before asking: query the repos, tools and MCP servers first; record what you learn with jd_fact (text + source). Never ask what research can answer.
-                4. Ask the developer only through jd_ask: one simple question per call, plain words, multiple choice when possible with your recommended option. Never use ask_user_question.
-                5. No assumptions. Anything uncertain becomes a question.
-                6. Parity: restate your understanding with jd_parity; the plugin asks the developer and records their yes.
-                7. Write junior-dev documents only with jd_write_doc and fix every reason it returns.
-                8. Once the build loop runs (jd_run), do not do the work yourself and do not ask anything. If the developer sends a message about a change, call jd_pause, settle the change with them, update the documents, call jd_resettle, then jd_run.
-                9. When the loop sends you its report, relay it to the developer in full.
+                4. Research reads each repo's domain docs when present (GLOSSARY.md, GLOSSARY-MAP.md, CONTEXT.md, docs/adr/ or adr/) and records the relevant terms and decisions with jd_fact, the file as source. Use the repo's terms in documents and questions. Never contradict an ADR without raising it as a question.
+                5. Ask the developer only through jd_ask: exactly one simple question per call, plain words, multiple choice when possible with your recommended option. Never use ask_user_question.
+                6. Interview in design-tree order: keep a tree of open decisions in mind and ask only questions whose prerequisite decisions are settled.
+                7. No assumptions. Anything uncertain becomes a question.
+                8. Parity: restate your understanding with jd_parity; the plugin asks the developer and records their yes.
+                9. Write junior-dev documents only with jd_write_doc and fix every reason it returns.
+                10. If a repo already keeps a glossary or ADRs, new terms or hard-to-reverse decisions settled in the interview become requirements and plan leaves that update those files, so the PR carries them. If it keeps none, never create them.
+                11. Once the build loop runs (jd_run), do not do the work yourself and do not ask anything. If the developer sends a message about a change, call jd_pause, settle the change with them, update the documents, call jd_resettle, then jd_run.
+                12. When the loop sends you its report, relay it to the developer in full.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

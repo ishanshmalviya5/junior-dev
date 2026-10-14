@@ -655,3 +655,33 @@ test('v2-02: every brief carries its role\'s practice skill, and no skill tells 
   }
   assert.ok(fs.existsSync(path.join(dir, '..', 'CREDITS.md')));
 });
+
+test('v2-07: briefs point workers at the repo glossary when it has one, and the protocol covers design-tree order and domain docs', async () => {
+  const { workerBrief, fixBrief, reviewBrief, PROTOCOL } = await import('../lib/host/prompts.js');
+  const withDoc = tmpdir('jd-gloss-');
+  const without = tmpdir('jd-nogloss-');
+  const big = tmpdir('jd-biggloss-');
+  fs.writeFileSync(path.join(withDoc, 'GLOSSARY.md'), '# g\n\n**Ledger entry**: one booked movement of money.\n');
+  fs.writeFileSync(path.join(big, 'CONTEXT.md'), `# c\n${'term\n'.repeat(2000)}`);
+  const run = { name: 'feat', dir: '/tmp/feat-docs' };
+  const node = { id: 'N.1', title: 't', goal: 'g', doneWhen: [{ id: 'N.1#1', text: 'works' }], traces: { requirements: ['A1'] }, checks: [], provides: [], uses: [] };
+  const check = { id: 'U1', kind: 'automated', requirementIds: ['A1'] };
+  const briefs = (wp) => [
+    workerBrief({ node, run, contracts: [], workPaths: wp, role: 'builder' }),
+    fixBrief({ run, check, output: 'boom', workPaths: wp }),
+    reviewBrief({ run, workPaths: wp, diffStat: 'a.js' }),
+  ];
+  for (const b of briefs([withDoc])) {
+    assert.ok(b.includes(path.join(withDoc, 'GLOSSARY.md')), 'brief names the glossary file');
+    assert.match(b, /use these terms/);
+    assert.match(b, /Ledger entry/, 'a small glossary is included');
+  }
+  for (const b of briefs([without])) assert.doesNotMatch(b, /GLOSSARY|CONTEXT\.md|keeps a glossary/, 'no glossary, no pointer');
+  for (const b of briefs([big])) {
+    assert.ok(b.includes(path.join(big, 'CONTEXT.md')));
+    assert.doesNotMatch(b, /term\nterm\nterm/, 'a large file is only pointed to');
+  }
+  assert.match(PROTOCOL, /design-tree order/);
+  assert.match(PROTOCOL, /GLOSSARY\.md.*CONTEXT\.md.*adr/s);
+  assert.match(PROTOCOL, /never create them/);
+});
