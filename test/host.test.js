@@ -1135,3 +1135,184 @@ test('v2-09: tool checks also work on the jd_preflight path', async () => {
     delete hub.overrides.executeTool;
   }
 });
+
+// ---------------------------------------------------------------- v2-11 iOS profile
+const IOS_FILES = { 'App.xcodeproj/project.pbxproj': '// toy\n' };
+const iosTool = (over = {}) => async (_h, c) => {
+  if (over[c.name]) return typeof over[c.name] === 'function' ? over[c.name](c) : over[c.name];
+  if (c.name === 'ios_status') return { ready: true, reasons: [] };
+  if (c.name === 'ios_sim_screenshot') return { path: '/tmp/shots/after.png' };
+  throw new Error(`unscripted tool ${c.name}`);
+};
+
+test('v2-11: an iOS toy repo (.xcodeproj / .xcworkspace / iOS Package.swift) is detected; default checks are build and test tool checks', async () => {
+  const { matchProfiles, detectStack } = await import('../lib/profiles/index.js');
+  assert.deepEqual(matchProfiles(['App.xcodeproj', 'README.md']), ['ios']);
+  assert.deepEqual(matchProfiles(['App.xcworkspace']), ['ios']);
+  assert.deepEqual(matchProfiles(['README.md']), []);
+  const w = makeWorld({ repoFiles: () => IOS_FILES });
+  const s = detectStack(w.repoPaths[0]);
+  assert.equal(s.profile, 'ios');
+  assert.deepEqual(s.checks.map((c) => [c.id, c.tool, c.pass]), [['build', 'ios_build', 'ios-build'], ['test', 'ios_test', 'ios-test']]);
+  assert.equal(s.checks[0].arguments.workspacePath, path.join(w.repoPaths[0], 'App.xcodeproj'));
+  const pkg = tmpdir('jd-pkg-');
+  fs.writeFileSync(path.join(pkg, 'Package.swift'), '// swift-tools-version: 6.0\nimport PackageDescription\nlet package = Package(name: "K", platforms: [.iOS(.v17)], targets: [])\n');
+  assert.equal(detectStack(pkg).profile, 'ios');
+  const mac = tmpdir('jd-pkg-');
+  fs.writeFileSync(path.join(mac, 'Package.swift'), 'let package = Package(name: "K", platforms: [.macOS(.v14)], targets: [])\n');
+  assert.equal(detectStack(mac).profile, null);
+});
+
+test('v2-11: build and test evidence pass or fail by the profile rules, through a scripted executeTool', async () => {
+  const { runAnyCheck } = await import('../lib/host/run-check.js');
+  const w = makeWorld();
+  const counts = (o = {}) => ({ total: 10, passed: 10, failed: 0, skipped: 0, expectedFailures: 0, notRun: 0, ...o });
+  let build = { result: 'success', errors: [], logPath: '/tmp/b.log' };
+  let test_ = { counts: counts(), failures: [], xcresultPath: '/tmp/r.xcresult' };
+  const seen = [];
+  hub.overrides.executeTool = iosTool({ ios_build: (c) => { seen.push(c); return build; }, ios_test: () => test_ });
+  try {
+    await w.rootExec('jd_start');
+    const h = w.handle();
+    const B = { id: 'U1', tool: 'ios_build', arguments: { workspacePath: '/w/App.xcodeproj' }, pass: 'ios-build' };
+    const T_ = { id: 'U2', tool: 'ios_test', arguments: { workspacePath: '/w/App.xcodeproj' }, pass: 'ios-test' };
+    assert.equal((await runAnyCheck(h, B, {})).ok, true);
+    assert.deepEqual(seen[0].arguments, { workspacePath: '/w/App.xcodeproj' });
+    build = { result: 'failed', errors: [{ file: 'A.swift', line: 3, message: 'cannot find x' }], logPath: '/tmp/b.log' };
+    const bf = await runAnyCheck(h, B, {});
+    assert.equal(bf.ok, false);
+    assert.match(bf.output, /A\.swift:3 cannot find x/);
+    build = { result: 'cancelled', errors: [] };
+    assert.equal((await runAnyCheck(h, B, {})).ok, false);
+    assert.equal((await runAnyCheck(h, T_, {})).ok, true);
+    test_ = { counts: counts({ failed: 1, passed: 9 }), failures: [{ name: 'GreetTests.testEmpty', message: 'XCTAssertEqual failed' }], xcresultPath: '/tmp/r.xcresult' };
+    const tf = await runAnyCheck(h, T_, {});
+    assert.equal(tf.ok, false);
+    assert.match(tf.output, /GreetTests\.testEmpty: XCTAssertEqual failed[\s\S]*r\.xcresult/);
+    test_ = { counts: counts({ notRun: 2, passed: 8 }), failures: [] };
+    assert.equal((await runAnyCheck(h, T_, {})).ok, false, 'notRun must be 0');
+    test_ = { error: 'build_failed', counts: counts(), failures: [] };
+    assert.match((await runAnyCheck(h, T_, {})).output, /build_failed/);
+    test_ = { error: { kind: 'tests_running' } };
+    assert.equal((await runAnyCheck(h, T_, {})).ok, false);
+    hub.overrides.executeTool = async () => { throw new Error('unknown tool ios_test'); };
+    assert.match((await runAnyCheck(h, T_, {})).output, /unknown tool ios_test/);
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+});
+
+test('v2-11: a not-ready dsh-ios (or a missing status tool) blocks preflight with the reasons and the setup hint', async () => {
+  const w = makeWorld({ repoFiles: () => IOS_FILES });
+  const j = JSON.parse;
+  await w.rootExec('jd_start');
+  await w.rootExec('jd_fact', { text: 'iOS app', source: 'App.xcodeproj' });
+  await w.rootExec('jd_advance', { to: 'interview' });
+  await w.rootExec('jd_set', { key: 'repos', value: w.repoPaths.map((p) => ({ path: p, mode: 'worktree' })) });
+  const calls = [];
+  hub.overrides.executeTool = iosTool({ ios_status: (c) => { calls.push(c); return { ready: false, reasons: ['Xcode MCP is not enabled', 'no folder grant for the worktree root'], setup: ['xcrun mcp-server enable'] }; } });
+  try {
+    const pf = j(await w.rootExec('jd_preflight', { items: [{ what: 'node works', command: 'node --version' }] }));
+    assert.equal(pf.ok, false);
+    const r = pf.results.find((x) => x.id === 'ios-ready');
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /Xcode MCP is not enabled; no folder grant/);
+    assert.match(r.detail, /one-time setup: xcrun mcp-server enable/);
+    assert.equal(calls[0].arguments.worktreesRoot, process.env.JD_WORKTREES_ROOT);
+    assert.equal(w.handle().run.state.preflight.find((p) => p.id === 'ios-ready').ok, false);
+    hub.overrides.executeTool = async () => { throw new Error('unknown tool ios_status'); };
+    const pf2 = j(await w.rootExec('jd_preflight', { items: [] }));
+    assert.equal(pf2.ok, false);
+    assert.match(pf2.results.find((x) => x.id === 'ios-ready').detail, /unknown tool ios_status/);
+    hub.overrides.executeTool = iosTool();
+    const pf3 = j(await w.rootExec('jd_preflight', { items: [] }));
+    assert.equal(pf3.results.find((x) => x.id === 'ios-ready').ok, true);
+    assert.equal(w.handle().run.state.preflight.find((p) => p.id === 'ios-ready').ok, true);
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+});
+
+test('v2-11: Xcode MCP tools are in the worker deny list of iOS repos only, dsh-ios tools are not; human checks carry a screenshot reference', async () => {
+  const { hiddenToolsFor } = await import('../lib/profiles/index.js');
+  const { XCODE_TOOL_NAMES } = await import('../lib/engine/classify.js');
+  const avail = ['mcp__Xcode__BuildProject', 'mcp__other-server__XcodeRead', 'mcp__github__create_issue', 'ios_build', 'ios_sim_screenshot', 'mcp__x__NotAnXcodeTool'];
+  const hidden = hiddenToolsFor({ '/r': { profile: 'ios' } }, avail);
+  assert.ok(hidden.includes('mcp__Xcode__BuildProject') && hidden.includes('mcp__other-server__XcodeRead'));
+  assert.ok(!hidden.some((n) => /^ios_|github|NotAnXcodeTool/.test(n)));
+  assert.ok(hidden.includes(`mcp__xcode__${XCODE_TOOL_NAMES[0]}`));
+  assert.deepEqual(hiddenToolsFor({ '/r': { profile: 'ts' } }, avail), []);
+
+  for (const ios of [true, false]) {
+    const w = makeWorld({ repoFiles: () => (ios ? IOS_FILES : {}) });
+    honestBuilders(w);
+    const hiddenSeen = [];
+    const inner = hub.overrides.spawnWorker;
+    hub.overrides.spawnWorker = (h, o) => { hiddenSeen.push(o.hiddenTools); return inner(h, o); };
+    const asks = [];
+    const innerAsk = hub.overrides.ask;
+    hub.overrides.ask = (h, qs) => { asks.push(...qs); return innerAsk(h, qs); };
+    hub.overrides.executeTool = iosTool();
+    try {
+      await w.settleToFinal();
+      const run = await runToEnd(w);
+      assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+      assert.ok(hiddenSeen.length >= 2);
+      for (const hs of hiddenSeen) {
+        assert.equal(hs.includes('mcp__xcode__BuildProject'), ios);
+        assert.ok(!hs.some((n) => n.startsWith('ios_')));
+      }
+      const hc = asks.find((q) => q.id === 'HC:H1');
+      if (ios) {
+        assert.match(hc.detail, /ios screenshot \/tmp\/shots\/after\.png/);
+        assert.ok(run.state.notes.some((n) => n.kind === 'human_evidence' && /after\.png/.test(n.text)));
+      } else {
+        assert.doesNotMatch(hc.detail, /screenshot/);
+      }
+    } finally {
+      delete hub.overrides.executeTool;
+    }
+  }
+
+  // a failed capture is noted, not fatal
+  const w = makeWorld({ repoFiles: () => IOS_FILES });
+  honestBuilders(w);
+  hub.overrides.executeTool = iosTool({ ios_sim_screenshot: () => { throw new Error('no booted simulator'); } });
+  try {
+    await w.settleToFinal();
+    const run = await runToEnd(w);
+    assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+    assert.ok(run.state.notes.some((n) => n.kind === 'human_evidence' && /could not capture.*no booted simulator/.test(n.text)));
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+});
+
+test('v2-11: profile timeouts reach the check runner for shell and tool checks (and iOS limits are long)', async () => {
+  const { PROFILES, timeoutFor, profileByName } = await import('../lib/profiles/index.js');
+  const { runAnyCheck } = await import('../lib/host/run-check.js');
+  const ios = profileByName('ios');
+  assert.equal(timeoutFor(ios, { tool: 'ios_build' }), 30 * 60 * 1000);
+  assert.equal(timeoutFor(ios, { tool: 'ios_test' }), 45 * 60 * 1000);
+  assert.equal(timeoutFor(ios, { command: 'true' }), 30 * 60 * 1000);
+  const slow = { name: 'v211', markers: { all: ['nope.v211'] }, passRules: { ok: () => ({ ok: true, output: '' }) }, timeouts: { checkMs: 300, byTool: { slow_tool: 80 } } };
+  PROFILES.push(slow);
+  const w = makeWorld({ human: false });
+  try {
+    await w.rootExec('jd_start');
+    const h = w.handle();
+    h.run.set('stacks', { '/r': { profile: 'v211', candidates: ['v211'], checks: [] } });
+    hub.overrides.executeTool = (_h, c) => new Promise((res) => { c.signal.addEventListener('abort', () => res('aborted')); });
+    const t0 = Date.now();
+    const tool = await runAnyCheck(h, { tool: 'slow_tool', arguments: {}, pass: 'ok' }, {});
+    assert.equal(tool.ok, false);
+    assert.match(tool.output, /timed out after 80 ms/);
+    const sh = await runAnyCheck(h, { command: 'sleep 5' }, { cwd: process.cwd() });
+    assert.equal(sh.ok, false);
+    assert.ok(Date.now() - t0 < 3000, 'both stopped by the profile limits, not by the 5 s command');
+    assert.match((await runAnyCheck(h, { tool: 'slow_tool', arguments: {}, pass: 'ok' }, { timeoutMs: 20 })).output, /timed out after 20 ms/);
+  } finally {
+    PROFILES.splice(PROFILES.indexOf(slow), 1);
+    delete hub.overrides.executeTool;
+  }
+});
