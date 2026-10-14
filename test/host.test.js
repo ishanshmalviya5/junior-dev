@@ -23,7 +23,7 @@ const sig = () => new AbortController().signal;
 
 const PRD_TEXT = `# Greeting helper\n\nAdd greet(name) returning "Hello, <name>!" and export it from index.js. See /tmp/notes.md for background.\n`;
 
-function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, human = true, repoFiles = () => ({}) } = {}) {
+function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, human = true, repoFiles = () => ({}), plan = null } = {}) {
   const session = tmpdir('jd-session-');
   const binDir = path.join(session, '.bin');
   fs.mkdirSync(binDir);
@@ -111,13 +111,15 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
     await rootExec('jd_parity', { key: 'requirements', restatement: 'A1 greet, B1 export' });
     assert.ok(j(await rootExec('jd_advance', { to: 'verification_plan' })).ok);
     const r1 = repoPaths[0];
-    const vp = `# VP\n## Highlights\n### What gets built\n- checks\n### What doesn't\n- none\n### Decisions & assumptions\n- none\n### What needs you\n- H1\n## Checks\n| ID | Kind | Check | Proves | Command |\n|---|---|---|---|---|\n| U1 | automated | greet works | A1 | \`node -e "import('./greet.js').then(m=>process.exit(m.greet('Bo')==='Hello, Bo!'?0:1))"\` |\n| U2 | automated | export works | B1 | \`node -e "import('./index.js').then(m=>process.exit(typeof m.greet==='function'?0:1))"\` |\n${human ? '| H1 | human | read the greeting | A1 | |\n' : ''}`;
+    const P = plan?.(repoPaths);
+    const vpRows = P?.vpRows ?? `| U1 | automated | greet works | A1 | \`node -e "import('./greet.js').then(m=>process.exit(m.greet('Bo')==='Hello, Bo!'?0:1))"\` |\n| U2 | automated | export works | B1 | \`node -e "import('./index.js').then(m=>process.exit(typeof m.greet==='function'?0:1))"\` |\n`;
+    const vp = `# VP\n## Highlights\n### What gets built\n- checks\n### What doesn't\n- none\n### Decisions & assumptions\n- none\n### What needs you\n- H1\n## Checks\n| ID | Kind | Check | Proves | Command |\n|---|---|---|---|---|\n${vpRows}${human ? '| H1 | human | read the greeting | A1 | |\n' : ''}`;
     assert.equal(j(await rootExec('jd_write_doc', { key: 'verificationPlan', content: vp })).ok, true);
     await rootExec('jd_parity', { key: 'verificationPlan', restatement: 'U1 U2 H1' });
     assert.ok(j(await rootExec('jd_advance', { to: 'specs' })).ok);
     await rootExec('jd_write_doc', { key: 'specs', content: '# Specs\n- **S1 greet.** greet.js exports greet [A1]\n- **S2 export.** index.js re-exports greet [B1]\n' });
     assert.ok(j(await rootExec('jd_advance', { to: 'implementation_plan' })).ok);
-    await rootExec('jd_write_doc', { key: 'implementationPlan', content: '# Plan\n| Step | Work | Specs | Checks |\n|---|---|---|---|\n| P1 | greet | S1 | U1 |\n| P2 | export | S2 | U2 |\n' });
+    await rootExec('jd_write_doc', { key: 'implementationPlan', content: '# Plan\n| Step | Work | Specs | Checks |\n|---|---|---|---|\n| P1 | greet | S1 | U1 |\n| P2 | export | S2 | U2 |\n' + (P?.ipExtra ?? '') });
     assert.ok(j(await rootExec('jd_tree', { op: 'init' })).ok);
     const greetCheck = `node -e "import('./greet.js').then(m=>process.exit(m.greet('Al')==='Hello, Al!'?0:1))"`;
     const exportCheck = `node -e "import('./index.js').then(m=>process.exit(typeof m.greet==='function'?0:1))"`;
@@ -125,7 +127,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
       await rootExec('jd_tree', {
         op: 'split',
         nodeId: 'N',
-        children: [
+        children: P?.leaves ?? [
           { title: 'greet()', doneWhen: ['greet returns the greeting'], covers: ['N#A1'], traces: { requirements: ['A1'], checks: ['U1'] }, kind: 'behaviour', checks: [{ command: greetCheck, cwd: r1 }], provides: [{ name: 'greet', description: 'greet(name): string' }], risk: 'high' },
           { title: 'export', doneWhen: ['index.js exports greet'], covers: ['N#B1'], traces: { requirements: ['B1'], checks: ['U2'] }, kind: 'behaviour', checks: [{ command: exportCheck, cwd: r1 }], dependsOn: ['#1'], uses: ['C:N.1:greet'] },
         ],
@@ -674,6 +676,8 @@ test('U9/J4 (iOS research): the gate holds iOS uploads without permission and re
   const h = { run };
   const agent = { id: 'W-ios', session: { header: { cwd: session, delegationDepth: 1, origin: 'subagent' } } };
   const judgeAs = (name, args) => judge({ name, arguments: args, agent }, h);
+  const rootAgent = { id: 'R-ios', session: { header: { cwd: session } } }; // workers may not use Xcode MCP at all (v2-12); the root agent still may
+  const judgeRoot = (name, args) => judge({ name, arguments: args, agent: rootAgent }, h);
   const stateDir = path.join(run.dir, 'state');
   const rel = path.relative(session, run.dir);
   const uploads = ['xcrun altool --upload-app -f App.ipa -t ios', 'xcrun notarytool submit App.zip --wait', 'bundle exec fastlane beta', 'xcodebuild -exportArchive -archivePath a.xcarchive -exportOptionsPlist e.plist', 'xcrun iTMSTransporter -m upload -assetFile a.ipa'];
@@ -681,7 +685,7 @@ test('U9/J4 (iOS research): the gate holds iOS uploads without permission and re
   run.set('permissions', { push: false, pr: false, remoteWrites: [], debugEnv: null });
   for (const command of uploads) assert.match(judgeAs('bash', { command })?.reason ?? '', /was not permitted in the interview/, command);
   assert.equal(judgeAs('bash', { command: 'xcodebuild -scheme App test' }), null, 'local builds pass');
-  assert.equal(judgeAs('mcp__xcode__UpdateTargetBuildSetting', { tabIdentifier: 'w1', targetName: 'App', buildSettingName: 'SWIFT_VERSION', buildSettingValue: '6.0' }), null, 'a local project setting');
+  assert.equal(judgeRoot('mcp__xcode__UpdateTargetBuildSetting', { tabIdentifier: 'w1', targetName: 'App', buildSettingName: 'SWIFT_VERSION', buildSettingValue: '6.0' }), null, 'a local project setting');
 
   const stateWrites = [
     ['mcp__xcode__XcodeWrite', { tabIdentifier: 'w1', filePath: path.join(stateDir, 'events.jsonl'), content: '{}' }],
@@ -696,8 +700,8 @@ test('U9/J4 (iOS research): the gate holds iOS uploads without permission and re
   for (const [name, args] of stateWrites) assert.match(judgeAs(name, args)?.reason ?? '', /state is written only by the plugin/, `${name} ${JSON.stringify(args)}`);
   assert.match(judgeAs('mcp__xcode__XcodeWrite', { filePath: path.join(run.dir, 'requirements.md'), content: 'x' })?.reason ?? '', /written with jd_write_doc/);
   assert.match(judgeAs('mcp__xcode__XcodeUpdate', { filePath: `Project/${rel}/specs.md`, oldString: 'a', newString: 'b' })?.reason ?? '', /written with jd_write_doc/);
-  assert.equal(judgeAs('mcp__xcode__XcodeWrite', { filePath: 'App/Sources/Greet.swift', content: 'let file = "snapshot.json"\n' }), null, 'ordinary project files pass');
-  assert.equal(judgeAs('mcp__xcode__XcodeRead', { filePath: path.join(stateDir, 'snapshot.json') }), null, 'reads pass');
+  assert.equal(judgeRoot('mcp__xcode__XcodeWrite', { filePath: 'App/Sources/Greet.swift', content: 'let file = "snapshot.json"\n' }), null, 'ordinary project files pass');
+  assert.equal(judgeRoot('mcp__xcode__XcodeRead', { filePath: path.join(stateDir, 'snapshot.json') }), null, 'reads pass');
 
   run.set('permissions', { push: false, pr: false, remoteWrites: ['altool-upload', 'notarytool-submit', 'fastlane', 'xcodebuild-export', 'transporter'], debugEnv: null });
   for (const command of uploads) assert.equal(judgeAs('bash', { command }), null, `permitted: ${command}`);
@@ -1313,6 +1317,93 @@ test('v2-11: profile timeouts reach the check runner for shell and tool checks (
     assert.match((await runAnyCheck(h, { tool: 'slow_tool', arguments: {}, pass: 'ok' }, { timeoutMs: 20 })).output, /timed out after 20 ms/);
   } finally {
     PROFILES.splice(PROFILES.indexOf(slow), 1);
+    delete hub.overrides.executeTool;
+  }
+});
+
+// ---------------------------------------------------------------- v2-12 mixed iOS + TS run
+test('v2-12: a mixed iOS + TS two-repo scripted run reaches done with per-repo stacks, evidence, guidance and PRs', async () => {
+  const calls = [];
+  const w = makeWorld({
+    repos: 2, push: true, pr: true,
+    repoFiles: (i) => (i === 0 ? IOS_FILES : TS_FILES),
+    plan: ([r1, r2]) => ({
+      vpRows: `| U1 | automated | iOS app builds | A1 | \`tool:ios_build {"workspacePath":"${path.join(r1, 'App.xcodeproj')}"} pass:ios-build\` |\n| U2 | automated | TS helper exists | B1 | \`test -f greet.ts\` |\n`,
+      ipExtra: `\n| Check | Command | Cwd |\n|---|---|---|\n| U2 | \`test -f greet.ts\` | ${r2} |\n`,
+      leaves: [
+        { title: 'iOS greeting', doneWhen: ['the app builds'], covers: ['N#A1'], traces: { requirements: ['A1'], checks: ['U1'] }, kind: 'behaviour', checks: [{ tool: 'ios_build', arguments: { workspacePath: path.join(r1, 'App.xcodeproj') }, pass: 'ios-build' }], risk: 'high' },
+        { title: 'TS greeting', doneWhen: ['greet.ts exists'], covers: ['N#B1'], traces: { requirements: ['B1'], checks: ['U2'] }, kind: 'behaviour', checks: [{ command: 'test -f greet.ts', cwd: r2 }] },
+      ],
+    }),
+  });
+  const seen = {};
+  const spy = (key, file, repoIdx) => {
+    w.scripts[key] = async ({ prompt, run, exec }) => {
+      seen[key] = prompt;
+      fs.writeFileSync(path.join(run.state.settings.repos[repoIdx].workPath, file), '// toy\n');
+      await exec('jd_submit', { summary: `${file} added` });
+    };
+  };
+  spy('builder:N.1', 'Greeter.swift', 0);
+  spy('builder:N.2', 'greet.ts', 1);
+  // red first: the build fails until the worker has added the Swift file to the worktree
+  hub.overrides.executeTool = iosTool({ ios_build: (c) => { calls.push(c); return fs.existsSync(path.join(path.dirname(c.arguments.workspacePath), 'Greeter.swift')) ? { result: 'success', errors: [], logPath: '/tmp/b.log' } : { result: 'failed', errors: [{ file: 'App.swift', line: 1, message: 'no Greeter' }] }; } });
+  try {
+    await w.settleToFinal();
+    const run = await runToEnd(w);
+    assert.equal(run.state.phase, 'done', `${run.state.sideReason ?? ''} ${JSON.stringify(run.state.blockers)}`);
+    const [r1, r2] = run.state.settings.repos;
+    const st = run.state.settings.stacks;
+    assert.equal(st[r1.path].profile, 'ios');
+    assert.equal(st[r2.path].profile, 'ts');
+    const ev1 = run.state.tree.nodes['N.1'].evidence.filter((e) => e.ok);
+    assert.match(ev1[0].output, /tool ios_build[\s\S]*rule ios-build: pass/);
+    assert.ok(run.state.tree.nodes['N.2'].evidence.some((e) => e.ok));
+    assert.ok(calls.length >= 2, 'leaf check plus the end-of-run cross-repo check');
+    for (const c of calls) assert.equal(c.arguments.workspacePath, path.join(r1.workPath, 'App.xcodeproj'));
+    for (const id of ['U1', 'U2']) assert.equal(run.state.checks[id].results.at(-1).ok, true, id);
+    assert.match(seen['builder:N.1'], /iOS repo notes/);
+    assert.doesNotMatch(seen['builder:N.1'], /TypeScript repo notes/);
+    assert.match(seen['builder:N.2'], /TypeScript repo notes/);
+    assert.doesNotMatch(seen['builder:N.2'], /iOS repo notes/);
+    const gh = fs.readFileSync(w.ghLog, 'utf8');
+    assert.equal((gh.match(/^pr create/gm) ?? []).length, 2);
+    assert.equal(run.state.delivery.prs.length, 2);
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+});
+
+test('v2-12: the gate denies Xcode MCP tools for workers whatever the server is called, and points at dsh-ios', async () => {
+  const { XCODE_TOOL_NAMES } = await import('../lib/engine/classify.js');
+  const w = makeWorld({ human: false });
+  await w.rootExec('jd_start');
+  const h = w.handle();
+  for (const name of [`mcp__my-odd_server.7__${XCODE_TOOL_NAMES[0]}`, 'mcp__xcode__BuildProject', 'mcp__Xc0de__XcodeRead']) {
+    const d = judge({ name, arguments: {}, agent: w.worker }, h);
+    assert.equal(d?.kind, 'deny', name);
+    assert.match(d.reason, /dsh-ios/);
+  }
+  assert.equal(judge({ name: 'mcp__odd__NotAnXcodeTool', arguments: {}, agent: w.worker }, h), null);
+  assert.equal(judge({ name: 'ios_build', arguments: {}, agent: w.worker }, h), null);
+});
+
+test('v2-12: a tool check\'s workspacePath is remapped into the worktree (a path elsewhere is left alone)', async () => {
+  const w = makeWorld({ repoFiles: () => IOS_FILES, human: false });
+  honestBuilders(w);
+  const seen = [];
+  hub.overrides.executeTool = iosTool({ ios_build: (c) => { seen.push(c.arguments.workspacePath); return { result: 'success', errors: [] }; } });
+  try {
+    await w.settleToFinal();
+    const h = w.handle();
+    const [repo] = h.run.state.settings.repos;
+    const { runCheckOf } = await import('../lib/host/loop.js');
+    const mk = (p) => ({ id: 'X', tool: 'ios_build', arguments: { workspacePath: p }, pass: 'ios-build' });
+    await runCheckOf(h, mk(path.join(repo.path, 'App.xcodeproj')));
+    await runCheckOf(h, mk(path.join(repo.workPath, 'App.xcodeproj')));
+    await runCheckOf(h, mk('/elsewhere/Other.xcodeproj'));
+    assert.deepEqual(seen, [path.join(repo.workPath, 'App.xcodeproj'), path.join(repo.workPath, 'App.xcodeproj'), '/elsewhere/Other.xcodeproj']);
+  } finally {
     delete hub.overrides.executeTool;
   }
 });
