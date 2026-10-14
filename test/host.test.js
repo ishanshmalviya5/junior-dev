@@ -1457,3 +1457,55 @@ test('v2-13: jd_prepare installs a TS worktree\'s declared deps in the worktree;
     }
   }
 });
+
+// ---------------------------------------------------------------- R2 findings (v2 ticket 13)
+test('v2-13: the budget counts cache reads at a tenth (R2: prefix re-reads used up a toy run\'s budget)', async () => {
+  const { effectiveTokens, CACHE_READ_WEIGHT } = await import('../lib/engine/budget.js');
+  assert.equal(CACHE_READ_WEIGHT, 0.1);
+  // the R2 N.3 worker: 12.8k uncached, 381k cache read, 17k cache write, 2.9k out
+  assert.equal(effectiveTokens({ uncachedInputTokens: 12800, cacheReadTokens: 381000, cacheWriteTokens: 17000, outputTokens: 2900 }), 70800);
+  assert.equal(effectiveTokens(undefined), 0);
+  assert.equal(effectiveTokens({ outputTokens: 5 }), 5);
+});
+
+test('v2-13: builder briefs carry the repo rules, the bash description note, worktree check paths and the other items; a tests-only behaviour leaf is flagged in the evidence', async () => {
+  const RULES = '# Rules\n- No default exports.\n';
+  const w = makeWorld({
+    repoFiles: () => ({ 'AGENTS.md': RULES }),
+    plan: ([r1]) => ({
+      leaves: [
+        { title: 'greet()', doneWhen: ['greet returns the greeting'], covers: ['N#A1'], traces: { requirements: ['A1'], checks: ['U1'] }, kind: 'behaviour', checks: [{ command: GREET_CHECK, cwd: r1 }] },
+        { title: 'export test', doneWhen: ['index.js exports greet'], covers: ['N#B1'], traces: { requirements: ['B1'], checks: ['U2'] }, kind: 'behaviour', checks: [{ command: 'test -f test/export.test.js', cwd: r1 }], dependsOn: ['#1'] },
+      ],
+    }),
+  });
+  const seen = {};
+  honestBuilders(w);
+  // N.1 also ships a test file (source changed); N.2's builder writes only a test, but its check is "the test exists"
+  const inner = w.scripts['builder:N.1'];
+  w.scripts['builder:N.1'] = async (c) => { seen.N1 = c.prompt; return inner(c); };
+  w.scripts['builder:N.2'] = async ({ exec, run, prompt }) => {
+    seen.N2 = prompt;
+    const wp = run.state.settings.repos[0].workPath;
+    fs.mkdirSync(path.join(wp, 'test'), { recursive: true });
+    fs.writeFileSync(path.join(wp, 'test', 'export.test.js'), "import { greet } from '../index.js';\n");
+    await exec('jd_submit', { summary: 'test added' });
+  };
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  const wp = run.state.settings.repos[0].workPath;
+  for (const p of [seen.N1, seen.N2]) {
+    assert.match(p, /This repo's own rules[\s\S]*No default exports/);
+    assert.match(p, /Every bash call needs a short "description"/);
+    assert.ok(p.includes(`(in ${wp})`) && !p.includes(`(in ${w.repoPaths[0]})`), 'checks are shown in the worktree');
+  }
+  assert.match(seen.N1, /Do not build behaviour that belongs to other items[\s\S]*Other items still to build \(not yours\):\n- N\.2 export test/);
+  assert.equal(run.state.leafEvidence['N.1'].after.sourceChanged, true);
+  assert.equal(run.state.leafEvidence['N.2'].after.sourceChanged, false);
+  const { leafEvidenceLines, isTestPath } = await import('../lib/engine/report.js');
+  const lines = leafEvidenceLines(run.state).join('\n');
+  assert.match(lines, /N\.2 export test \[behaviour\]: red → green \(only tests changed: the behaviour was already there\)/);
+  assert.doesNotMatch(lines, /N\.1 .*only tests changed/);
+  for (const p of ['test/a.js', 'src/a.test.ts', 'ToyTests/ToyTests.swift', '__tests__/x.js', 'pkg/spec/x.rb']) assert.ok(isTestPath(p), p);
+  for (const p of ['src/discount.ts', 'index.js', 'CONTEXT.md', 'Toy/App.swift']) assert.ok(!isTestPath(p), p);
+});
