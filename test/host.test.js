@@ -42,7 +42,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
   const root = { id: `ROOT-${path.basename(session)}`, session: { header: { cwd: session }, deriveMessages: () => [{ role: 'user', content: [{ type: 'text', text: PRD_TEXT }] }] } };
   const worker = { id: `W-${path.basename(session)}`, session: { header: { cwd: session, delegationDepth: 1, origin: 'subagent', parentSession: root.id } } };
   const calls = { asks: [], notify: [], spawns: [] };
-  const answers = { human: () => 'Pass' };
+  const answers = { human: () => 'Pass', queued: () => null };
   const scripts = { reviewer: async () => '{"findings":[]}' }; // role or nodeId → async (ctx) => void
   hub.host = { logger: () => console };
   hub.overrides = {
@@ -50,6 +50,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
       calls.asks.push(questions.map((q) => q.id));
       return questions.map((q) => {
         if (q.id.startsWith('HC:')) return { id: q.id, selected: [answers.human(q)], custom: answers.human(q) === 'Fail' ? 'button is red' : null };
+        if (q.id.startsWith('QQ:') && answers.queued(q)) return { id: q.id, selected: [answers.queued(q)], custom: null };
         if (q.header === 'Parity') return { id: q.id, selected: ['Yes'], custom: null };
         return { id: q.id, selected: [q.options?.[0]?.label ?? 'ok'], custom: q.options?.length ? null : 'free answer' };
       });
@@ -162,6 +163,7 @@ async function runToEnd(w) {
   return w.handle().run;
 }
 
+const GREET_CHECK = `node -e "import('./greet.js').then(m=>process.exit(m.greet('Al')==='Hello, Al!'?0:1))"`;
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
 
 test('T2 + T10: scripted full run on one repo, intake → done; PRD verbatim; questions only from root; commits on junior-dev/<feature>; report', async () => {
@@ -759,20 +761,25 @@ test('v2-03: an already-green behaviour leaf goes back to the planner once, then
   setLeaf(w.handle().run, 'N.1', { checks: [{ id: 'N.1/k1', command: 'true', cwd: null }] });
   const order = [];
   const n1 = w.scripts['builder:N.1'];
-  w.scripts['planner:N.1'] = async () => order.push('planner');
+  w.scripts['planner:N.1'] = async ({ exec }) => {
+    order.push('planner');
+    if (order.length === 2) await exec('jd_set_checks', { checks: [{ command: GREET_CHECK, cwd: w.repoPaths[0] }] }); // the developer's answer sent it back
+  };
   w.scripts['builder:N.1'] = async (c) => {
     order.push(`builder(queue=${c.run.state.queue.length})`);
     return n1(c);
   };
   const run = await runToEnd(w);
-  assert.equal(w.calls.spawns.filter((s) => s.role === 'planner' && s.nodeId === 'N.1').length, 1, 'replanned exactly once');
+  assert.equal(w.calls.spawns.filter((s) => s.role === 'planner' && s.nodeId === 'N.1').length, 2, 'replanned once, then again after the answer');
   const ev = run.state.leafEvidence['N.1'];
-  assert.equal(ev.replans, 1);
+  assert.equal(ev.replans, 1, 'the answer gave a fresh replan');
   assert.equal(ev.parks, 1);
-  assert.equal(ev.before.ok, true);
+  assert.deepEqual(run.state.queue[0].options, ['Rewrite the check', 'Check is fine, already done', 'Drop the leaf']);
+  assert.equal(run.state.queue[0].recommended, 'Rewrite the check');
+  assert.equal(ev.before.ok, false, 'the rewritten check was red before the build');
   assert.match(run.state.queue[0].text, /behaviour leaf.*already passes/);
   assert.ok(w.calls.asks.some((ids) => ids.includes('QQ:QQ1')));
-  assert.deepEqual(order, ['planner', 'builder(queue=1)'], 'the builder starts only after the question was queued and answered');
+  assert.deepEqual(order, ['planner', 'planner', 'builder(queue=1)'], 'the builder starts only after the question was queued, answered and the check rewritten');
   assert.equal(run.state.phase, 'done');
 });
 
@@ -850,4 +857,110 @@ test('v2-10: the generated patch has Creator mode\'s three rows and the protocol
   assert.match(y, /disabled: !!js "!ctx\.get\('profileContext'\)"/);
   assert.doesNotMatch(y, /dsh-plugin-manager\/tools'\n\s+disabled: true/);
   assert.match(y, /plugin_manager install_bundle/);
+});
+
+/** v2-04: a green behaviour leaf, replanned once without a better check, parks; the developer's answer decides. */
+async function parkedGreenLeaf(answer, { preGreet = false } = {}) {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run0 = w.handle().run;
+  if (preGreet) {
+    const work = run0.state.settings.repos[0].workPath;
+    fs.writeFileSync(path.join(work, 'greet.js'), 'export const greet = (n) => `Hello, ${n}!`;\n');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-q', '-m', 'pre');
+  }
+  setLeaf(run0, 'N.1', { checks: [{ id: 'N.1/k1', command: preGreet ? GREET_CHECK : 'true', cwd: w.repoPaths[0] }] });
+  w.answers.queued = (q) => (q.question.includes('behaviour leaf') ? answer : null);
+  return w;
+}
+const spawnsOf = (w, role, id) => w.calls.spawns.filter((s) => s.role === role && s.nodeId === id).length;
+
+test('v2-04: a commit with a tagged debug line is refused, rolled back and reopened with a reason', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  let attempt = 0;
+  const prompts = [];
+  w.scripts['builder:N.1'] = async ({ exec, run, prompt }) => {
+    prompts.push(prompt);
+    const work = run.state.settings.repos[0].workPath;
+    attempt++;
+    fs.writeFileSync(path.join(work, 'greet.js'), `export const greet = (n) => {\n${attempt === 1 ? "  console.log('JD-DEBUG n', n);\n" : ''}  return \`Hello, \${n}!\`;\n};\n`);
+    await exec('jd_submit', { summary: 'greet added' });
+  };
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  const wt = run.state.settings.repos[0].workPath;
+  assert.equal(attempt, 2, 'the tagged attempt was reopened');
+  assert.match(prompts[0], /JD-DEBUG/, 'the builder brief states the tag');
+  assert.match(prompts[1], /Previous attempt failed[\s\S]*debug-tag[\s\S]*remove every tagged debug line/);
+  assert.ok(run.state.tree.nodes['N.1'].evidence.some((e) => e.checkId === 'debug-tag' && !e.ok));
+  assert.doesNotMatch(git(wt, 'log', '-p', '--format=%s'), /JD-DEBUG/, 'no commit ever carried the tag');
+  assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+});
+
+test('v2-04: the fixer root cause from jd_submit is in the fix commit message', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  const fixerPrompts = [];
+  let round = 0;
+  w.scripts.fixer = async ({ exec, run, prompt }) => {
+    fixerPrompts.push(prompt);
+    const work = run.state.settings.repos[0].workPath;
+    fs.appendFileSync(path.join(work, 'index.js'), "export const extra = 1; // JD-DEBUG leftover\n");
+    if (++round > 1) fs.writeFileSync(path.join(work, 'index.js'), "export { greet } from './greet.js';\nexport const extra = 1;\n");
+    await exec('jd_submit', { summary: 'added extra', rootCause: 'index.js never defined extra, which U2 reads' });
+  };
+  await w.settleToFinal();
+  w.handle().run.store.commit('check_def', { ...w.handle().run.state.checks.U2, command: `node -e "import('./index.js').then(m=>process.exit(m.extra===1?0:1))"` });
+  w.handle().run.parity('final', true);
+  const run = await runToEnd(w);
+  const wt = run.state.settings.repos[0].workPath;
+  assert.match(fixerPrompts[0], /JD-DEBUG/);
+  assert.equal(round, 2, 'the tagged fix was refused first');
+  assert.match(git(wt, 'log', '--format=%B', '--grep=^jd(fix'), /Root cause: index\.js never defined extra, which U2 reads/);
+  assert.doesNotMatch(git(wt, 'log', '-p', '--format=%s'), /JD-DEBUG/);
+  assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+});
+
+test('v2-04: park answer "check is fine, already done" marks the leaf done with the before-evidence and builds nothing', async () => {
+  const w = await parkedGreenLeaf('Check is fine, already done', { preGreet: true });
+  const run = await runToEnd(w);
+  const n = run.state.tree.nodes['N.1'];
+  assert.equal(n.status, 'done');
+  assert.match(n.evidence[0].output, /already satisfied before any work/);
+  assert.equal(spawnsOf(w, 'builder', 'N.1'), 0);
+  assert.equal(run.state.leafEvidence['N.1'].answer, 'done');
+  assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+});
+
+test('v2-04: park answer "rewrite the check" goes back to the planner, then the builder', async () => {
+  const w = await parkedGreenLeaf('Rewrite the check');
+  w.scripts['planner:N.1'] = async ({ exec, run }) => {
+    if (run.state.leafEvidence['N.1'].answer === 'rewrite') await exec('jd_set_checks', { checks: [{ command: GREET_CHECK, cwd: w.repoPaths[0] }] });
+  };
+  const run = await runToEnd(w);
+  assert.equal(spawnsOf(w, 'planner', 'N.1'), 2);
+  assert.equal(spawnsOf(w, 'builder', 'N.1'), 1);
+  assert.equal(run.state.tree.nodes['N.1'].checks[0].command, GREET_CHECK);
+  assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+});
+
+test('v2-04: park answer "drop the leaf" removes it under the ripple rules, or blocks it with the reasons', async () => {
+  // refused: N.2 depends on N.1 and the criterion N#A1 is covered only by N.1
+  const w = await parkedGreenLeaf('Drop the leaf');
+  const run = await runToEnd(w);
+  assert.equal(run.state.tree.nodes['N.1'].status, 'blocked');
+  assert.ok(run.state.notes.some((n) => n.kind === 'leaf_drop_refused' && /R5|R1/.test(n.text)));
+  assert.equal(spawnsOf(w, 'builder', 'N.1'), 0);
+  // allowed: nothing depends on it and a sibling covers its criteria
+  const w2 = await parkedGreenLeaf('Drop the leaf');
+  const r0 = w2.handle().run;
+  const n1 = r0.state.tree.nodes['N.1'];
+  setLeaf(r0, 'N.2', { dependsOn: [], uses: [], covers: [...r0.state.tree.nodes['N.2'].covers, ...n1.covers] });
+  r0.store.commit('tree', { op: 'test', patch: { contracts: { 'C:N.1:greet': { ...r0.state.tree.contracts['C:N.1:greet'], ownerNodeId: 'N' } } }, affected: [] });
+  const run2 = await runToEnd(w2);
+  assert.equal(run2.state.tree.nodes['N.1'], undefined, 'the leaf is gone');
+  assert.equal(spawnsOf(w2, 'builder', 'N.1'), 0);
 });
