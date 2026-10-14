@@ -21,7 +21,7 @@ function harness() {
   return { state, apply, node: (id) => state.tree.nodes[id] };
 }
 
-const leaf = (title, covers, reqs, extra = {}) => ({ title, doneWhen: [`${title} works`], covers, traces: { requirements: reqs }, checks: [{ command: 'true' }], ...extra });
+const leaf = (title, covers, reqs, extra = {}) => ({ title, doneWhen: [`${title} works`], covers, traces: { requirements: reqs }, kind: 'behaviour', checks: [{ command: 'true' }], ...extra });
 
 function base() {
   const h = harness();
@@ -231,4 +231,31 @@ test('E6 (review #7): a blocked dependency blocks its dependents, so the run can
   assert.match(h.node('N.2').statusWhy, /depends on blocked N\.1/);
   finish(h, 'N.3');
   assert.equal(situation(h.state.tree), 'resolved');
+});
+
+test('v2-03 U-check: a leaf needs a valid kind (behaviour | refactor); needsSplit items are exempt', () => {
+  const h = harness();
+  assert.ok(h.apply('init', { requirements: REQS, title: 'F' }).ok);
+  const noKind = { ...leaf('a', ['N#A1', 'N#A2', 'N#B1'], REQS) };
+  delete noKind.kind;
+  const r = h.apply('split', 'N', [noKind]);
+  assert.equal(r.ok, false);
+  assert.equal(r.rule, 'K1');
+  assert.match(r.reasons[0], /without a valid kind/);
+  const bad = h.apply('split', 'N', [leaf('a', ['N#A1', 'N#A2', 'N#B1'], REQS, { kind: 'feature' })]);
+  assert.equal(bad.ok, false);
+  assert.ok(h.apply('split', 'N', [leaf('a', ['N#A1', 'N#A2'], ['A1', 'A2'], { kind: 'refactor' }), { title: 'later', doneWhen: ['x'], covers: ['N#B1'], traces: { requirements: ['B1'] }, needsSplit: true }]).ok);
+  assert.equal(h.node('N.1').leafKind, 'refactor');
+  const spec = { title: 'z', doneWhen: ['x'], covers: ['N#A1'], traces: { requirements: ['A1'] }, checks: [{ command: 'true' }] };
+  assert.equal(h.apply('add', 'N', spec).ok, false, 'add also needs a kind');
+  assert.ok(h.apply('add', 'N', { ...spec, kind: 'behaviour' }).ok);
+});
+
+test('v2-03 U-check: setChecks rewrites a working leaf\'s checks only', () => {
+  const h = base();
+  assert.equal(h.apply('setChecks', 'N.1', [{ command: 'false' }]).ok, false, 'not working yet');
+  assert.ok(h.apply('claim', 'N.1', 'W').ok);
+  assert.equal(h.apply('setChecks', 'N.1', []).ok, false);
+  assert.ok(h.apply('setChecks', 'N.1', [{ command: 'false' }]).ok);
+  assert.equal(h.node('N.1').checks[0].command, 'false');
 });

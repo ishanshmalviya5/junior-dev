@@ -207,6 +207,7 @@
                 "A1"
               ]
             },
+            "kind": "behaviour",
             "checks": [
               {
                 "command": "node -e \"import('./greet.js').then(m=>process.exit(m.greet('Bo')==='Hello, Bo!'?0:1))\"",
@@ -233,6 +234,7 @@
                 "B1"
               ]
             },
+            "kind": "behaviour",
             "checks": [
               {
                 "command": "node -e \"import('./index.js').then(m=>process.exit(typeof m.greet==='function'?0:1))\"",
