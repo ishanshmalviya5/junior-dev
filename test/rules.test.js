@@ -124,6 +124,80 @@ test('U9: remote writes are classified and blocked without permission; reads pas
   assert.equal(allowed({ ...none, remoteWrites: ['mcp:mcp__jira__createIssue'] }, classify('mcp__jira__createIssue')).ok, true);
 });
 
+test('U9 (iOS research): App Store Connect, notary and Transporter uploads are remote writes, through xcrun and bundle exec too', () => {
+  const cases = [
+    ['xcrun altool --upload-app -f App.ipa -t ios -u me@x.com -p @keychain:AC', 'remote-write'],
+    ['altool --upload-package App.ipa --apple-id 123 --bundle-id x', 'remote-write'],
+    ['sudo /usr/bin/xcrun altool --upload-app -f App.ipa', 'remote-write'],
+    ['xcrun altool --validate-app -f App.ipa -t ios', 'remote-read'],
+    ['xcrun notarytool submit App.zip --keychain-profile p --wait', 'remote-write'],
+    ['xcrun notarytool history --keychain-profile p', 'remote-read'],
+    ['xcrun notarytool store-credentials p', 'local'],
+    ['iTMSTransporter -m upload -assetFile App.ipa', 'remote-write'],
+    ['xcrun iTMSTransporter -m upload -assetFile App.ipa', 'remote-write'],
+    ['/Applications/Transporter.app/Contents/itms/bin/iTMSTransporter -m upload -f pkg.itmsp', 'remote-write'],
+    ['xcrun iTMSTransporter -m lookupMetadata -apple_id 1', 'remote-read'],
+    ['xcodebuild -exportArchive -archivePath App.xcarchive -exportOptionsPlist ExportOptions.plist -exportPath out', 'remote-write'],
+    ['xcrun xcodebuild -exportArchive -archivePath App.xcarchive -exportOptionsPlist e.plist', 'remote-write'],
+    ['xcodebuild -scheme App -destination "platform=iOS Simulator,name=iPhone 17" test', 'local'],
+    ['xcodebuild archive -scheme App -archivePath App.xcarchive', 'local'],
+    ['xcrun simctl boot "iPhone 17"', 'local'],
+    ['xcrun --sdk iphoneos --show-sdk-path', 'local'],
+    ['xcrun -f altool', 'local'],
+    ['fastlane pilot upload --ipa App.ipa', 'remote-write'],
+    ['fastlane deliver --force', 'remote-write'],
+    ['fastlane upload_to_testflight', 'remote-write'],
+    ['bundle exec fastlane upload_to_app_store', 'remote-write'],
+    ['fastlane run upload_to_testflight', 'remote-write'],
+    ['fastlane ios beta', 'remote-write'],
+    ['bundle exec fastlane --env prod release', 'remote-write'],
+    ['fastlane gym', 'remote-write'],
+    ['fastlane scan', 'local'],
+    ['bundle exec fastlane ios run_tests', 'local'],
+    ['fastlane lanes', 'local'],
+    ['fastlane --version', 'local'],
+    ['fastlane pilot builds', 'remote-read'],
+    ['xcodebuild test && xcrun altool --upload-app -f App.ipa', 'remote-write'],
+  ];
+  for (const [cmd, kind] of cases) assert.equal(classify('bash', { command: cmd }).kind, kind, cmd);
+
+  const none = { push: false, pr: false, remoteWrites: [] };
+  for (const cmd of ['xcrun altool --upload-app -f App.ipa', 'xcrun notarytool submit App.zip', 'fastlane pilot upload', 'fastlane deliver', 'xcodebuild -exportArchive -exportOptionsPlist e.plist', 'xcrun iTMSTransporter -m upload']) {
+    const v = allowed(none, classify('bash', { command: cmd }));
+    assert.equal(v.ok, false, cmd);
+    assert.match(v.reason, /was not permitted in the interview/);
+  }
+  const ok = (remoteWrites, cmd) => allowed({ ...none, remoteWrites }, classify('bash', { command: cmd })).ok;
+  assert.equal(ok(['altool-upload'], 'xcrun altool --upload-app -f App.ipa'), true);
+  assert.equal(ok(['notarytool-submit'], 'xcrun notarytool submit App.zip --wait'), true);
+  assert.equal(ok(['fastlane'], 'bundle exec fastlane pilot upload'), true);
+  assert.equal(ok(['xcodebuild-export'], 'xcodebuild -exportArchive -exportOptionsPlist e.plist'), true);
+  assert.equal(ok(['transporter'], 'iTMSTransporter -m upload -assetFile a.ipa'), true);
+  assert.equal(ok(['notarytool-submit'], 'xcrun altool --upload-app -f App.ipa'), false, 'one permission does not cover another upload');
+  assert.equal(ok([], 'xcrun notarytool history'), true, 'remote reads pass');
+});
+
+test('U9 (iOS research): Xcode MCP tools are local (file writes flagged for the gate) or remote reads, whatever the server is called', () => {
+  for (const server of ['xcode', 'my_xcode']) {
+    for (const tool of ['XcodeWrite', 'XcodeUpdate', 'XcodeRM', 'XcodeMV', 'XcodeMakeDir', 'XcodeInsertFile', 'UpdateTargetBuildSetting', 'AddEntitlement', 'AddInfoPlist', 'UpdateFileCompilerFlags', 'XcodeMessageSend']) {
+      const c = classify(`mcp__${server}__${tool}`, {});
+      assert.deepEqual([c.kind, c.writes], ['local', true], tool);
+    }
+    for (const tool of ['BuildProject', 'RunProject', 'RunAllTests', 'RunSomeTests', 'RenderPreview', 'XcodeRead', 'XcodeLS', 'GetBuildLog', 'XcodeListWindows']) {
+      const c = classify(`mcp__${server}__${tool}`, {});
+      assert.deepEqual([c.kind, c.writes], ['local', undefined], tool);
+    }
+    for (const tool of ['DocumentationSearch', 'GetTopCrashIssues', 'GetCrashIssueLogs', 'GetTopFieldPerformanceIssues']) assert.equal(classify(`mcp__${server}__${tool}`, {}).kind, 'remote-read', tool);
+  }
+  const none = { push: false, pr: false, remoteWrites: [] };
+  assert.equal(allowed(none, classify('mcp__xcode__UpdateTargetBuildSetting', { buildSettingName: 'SWIFT_VERSION', buildSettingValue: '6.0' })).ok, true, 'a local project setting, not a remote write');
+  assert.equal(allowed(none, classify('mcp__xcode__XcodeWrite', { filePath: 'App/Sources/A.swift', content: 'x' })).ok, true);
+  // other servers keep the verb rule
+  assert.equal(classify('mcp__jira__updateIssue', {}).kind, 'remote-write');
+  assert.equal(classify('mcp__ci__addBuild', {}).kind, 'remote-write');
+  assert.equal(classify('mcp__ci__XcodeWriteLog', {}).kind, 'remote-read', 'only the known Xcode names');
+});
+
 test('U14: requirements, VP, specs and plan validators enforce full traceability', () => {
   const r = parseRequirements(REQUIREMENTS);
   assert.ok(r.ok);

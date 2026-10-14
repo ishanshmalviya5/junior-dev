@@ -589,3 +589,39 @@ test('R1 finding: a fixer that logs a blocker ends the fix loop for that check (
   assert.equal(run.state.blockers.filter((b) => b.checkId === 'U2').length, 1);
   assert.equal(run.state.phase, 'done');
 });
+
+test('U9/J4 (iOS research): the gate holds iOS uploads without permission and refuses Xcode MCP writes into the state dir or docs', () => {
+  const session = tmpdir('jd-session-');
+  const run = Run.create({ sessionFolder: session, prdText: PRD_TEXT });
+  const h = { run };
+  const agent = { id: 'W-ios', session: { header: { cwd: session, delegationDepth: 1, origin: 'subagent' } } };
+  const judgeAs = (name, args) => judge({ name, arguments: args, agent }, h);
+  const stateDir = path.join(run.dir, 'state');
+  const rel = path.relative(session, run.dir);
+  const uploads = ['xcrun altool --upload-app -f App.ipa -t ios', 'xcrun notarytool submit App.zip --wait', 'bundle exec fastlane beta', 'xcodebuild -exportArchive -archivePath a.xcarchive -exportOptionsPlist e.plist', 'xcrun iTMSTransporter -m upload -assetFile a.ipa'];
+
+  run.set('permissions', { push: false, pr: false, remoteWrites: [], debugEnv: null });
+  for (const command of uploads) assert.match(judgeAs('bash', { command })?.reason ?? '', /was not permitted in the interview/, command);
+  assert.equal(judgeAs('bash', { command: 'xcodebuild -scheme App test' }), null, 'local builds pass');
+  assert.equal(judgeAs('mcp__xcode__UpdateTargetBuildSetting', { tabIdentifier: 'w1', targetName: 'App', buildSettingName: 'SWIFT_VERSION', buildSettingValue: '6.0' }), null, 'a local project setting');
+
+  const stateWrites = [
+    ['mcp__xcode__XcodeWrite', { tabIdentifier: 'w1', filePath: path.join(stateDir, 'events.jsonl'), content: '{}' }],
+    ['mcp__xcode__XcodeWrite', { tabIdentifier: 'w1', filePath: `Project/${rel}/state/snapshot.json`, content: '{}' }],
+    ['mcp__xcode__XcodeUpdate', { filePath: path.relative(session, path.join(stateDir, 'snapshot.json')), oldString: 'a', newString: 'b' }],
+    ['mcp__xcode__XcodeRM', { path: `${run.name}/state`, recursive: true }],
+    ['mcp__xc__XcodeMV', { sourcePath: 'App/x.json', destinationPath: stateDir }],
+    ['mcp__xcode__XcodeMakeDir', { directoryPath: path.join(stateDir, 'x') }],
+    ['mcp__xcode__XcodeInsertFile', { sourceFilePath: path.join(stateDir, 'events.jsonl'), targetPath: 'App' }],
+    ['mcp__xcode__XcodeMessageSend', { message: 'file.write', params: JSON.stringify({ path: path.join(stateDir, 'events.jsonl') }) }],
+  ];
+  for (const [name, args] of stateWrites) assert.match(judgeAs(name, args)?.reason ?? '', /state is written only by the plugin/, `${name} ${JSON.stringify(args)}`);
+  assert.match(judgeAs('mcp__xcode__XcodeWrite', { filePath: path.join(run.dir, 'requirements.md'), content: 'x' })?.reason ?? '', /written with jd_write_doc/);
+  assert.match(judgeAs('mcp__xcode__XcodeUpdate', { filePath: `Project/${rel}/specs.md`, oldString: 'a', newString: 'b' })?.reason ?? '', /written with jd_write_doc/);
+  assert.equal(judgeAs('mcp__xcode__XcodeWrite', { filePath: 'App/Sources/Greet.swift', content: 'let file = "snapshot.json"\n' }), null, 'ordinary project files pass');
+  assert.equal(judgeAs('mcp__xcode__XcodeRead', { filePath: path.join(stateDir, 'snapshot.json') }), null, 'reads pass');
+
+  run.set('permissions', { push: false, pr: false, remoteWrites: ['altool-upload', 'notarytool-submit', 'fastlane', 'xcodebuild-export', 'transporter'], debugEnv: null });
+  for (const command of uploads) assert.equal(judgeAs('bash', { command }), null, `permitted: ${command}`);
+  assert.match(judgeAs('mcp__xcode__XcodeWrite', { filePath: path.join(stateDir, 'events.jsonl'), content: '{}' })?.reason ?? '', /state is written only by the plugin/, 'no permission opens the state dir');
+});
