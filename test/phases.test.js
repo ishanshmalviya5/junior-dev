@@ -140,6 +140,8 @@ test('U1: build → verify refused while items are unfinished or parked; deliver
   assert.equal(run.state.tree.nodes.N.status, 'done');
   assert.ok(run.advance('verify').ok);
   assert.match(run.advance('human_checks').reasons.join(), /check U1 has no result/);
+  assert.match(run.advance('human_checks').reasons.join(), /two-axis review has not run/);
+  run.note('review_done', '0 finding(s) left');
   for (const id of ['U1', 'U2']) run.recordCheck(id, { ok: true, output: 'ok', commit: null });
   assert.ok(run.advance('human_checks').ok);
   assert.match(run.advance('deliver').reasons[0], /human checks without a result: H1/);
