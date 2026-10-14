@@ -1,6 +1,6 @@
 # Credits
 
-The practice skills in `skills/` are adapted from mattpocock/skills (https://github.com/mattpocock/skills): red-first building and test quality from `tdd`, slicing from `to-tickets`, debugging from `diagnosing-bugs`, and review axes from `code-review`, rewritten for junior-dev workers.
+The practice skills in `skills/` are adapted from mattpocock/skills (https://github.com/mattpocock/skills): red-first building and test quality from `tdd`, slicing from `to-tickets`, debugging from `diagnosing-bugs`, and review axes from `code-review`, rewritten for junior-dev workers. The TypeScript stack profile's guidance (`lib/profiles/ts.js`) is a short adaptation of `tdd` and `codebase-design`.
 
 mattpocock/skills is licensed under the MIT License:
 

@@ -23,7 +23,7 @@ const sig = () => new AbortController().signal;
 
 const PRD_TEXT = `# Greeting helper\n\nAdd greet(name) returning "Hello, <name>!" and export it from index.js. See /tmp/notes.md for background.\n`;
 
-function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, human = true } = {}) {
+function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, human = true, repoFiles = () => ({}) } = {}) {
   const session = tmpdir('jd-session-');
   const binDir = path.join(session, '.bin');
   fs.mkdirSync(binDir);
@@ -33,7 +33,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
   const repoPaths = [];
   for (let i = 0; i < repos; i++) {
     const repo = path.join(session, `repo${i + 1}`);
-    gitRepo(repo, { 'package.json': '{"type":"module"}\n', 'index.js': 'export {};\n' });
+    gitRepo(repo, { 'package.json': '{"type":"module"}\n', 'index.js': 'export {};\n', ...repoFiles(i) });
     const bare = path.join(session, `remote${i + 1}.git`);
     execFileSync('git', ['init', '-q', '--bare', bare]);
     execFileSync('git', ['remote', 'add', 'origin', bare], { cwd: repo });
@@ -963,4 +963,84 @@ test('v2-04: park answer "drop the leaf" removes it under the ripple rules, or b
   const run2 = await runToEnd(w2);
   assert.equal(run2.state.tree.nodes['N.1'], undefined, 'the leaf is gone');
   assert.equal(spawnsOf(w2, 'builder', 'N.1'), 0);
+});
+
+// ---------------------------------------------------------------- v2-08 stack profiles
+const TS_FILES = {
+  'package.json': JSON.stringify({ type: 'module', scripts: { test: 'node --test', lint: 'eslint .' }, devDependencies: { typescript: '^5' } }),
+  'tsconfig.json': '{}\n',
+};
+
+test('v2-08: matchProfiles picks profiles from marker sets (pure)', async () => {
+  const { matchProfiles, PROFILES } = await import('../lib/profiles/index.js');
+  assert.deepEqual(matchProfiles(['package.json', 'tsconfig.json', 'src']), ['ts']);
+  assert.deepEqual(matchProfiles(['package.json']), []);
+  assert.deepEqual(matchProfiles([]), []);
+  const twin = { ...PROFILES[0], name: 'ts2' };
+  assert.deepEqual(matchProfiles(['package.json', 'tsconfig.json'], [PROFILES[0], twin]), ['ts', 'ts2']);
+  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'readiness', 'timeouts'].sort());
+});
+
+test('v2-08: a TS toy repo is detected when repos are set, and named in the next-step text; default checks come from package.json scripts', async () => {
+  const w = makeWorld({ repoFiles: () => TS_FILES });
+  await w.rootExec('jd_start');
+  await w.rootExec('jd_fact', { text: 'repo is TS', source: 'tsconfig.json' });
+  await w.rootExec('jd_advance', { to: 'interview' });
+  const out = await w.rootExec('jd_set', { key: 'repos', value: w.repoPaths.map((p) => ({ path: p, mode: 'worktree' })) });
+  assert.match(out, new RegExp(`${w.repoPaths[0]}: ts`));
+  const stack = w.handle().run.state.settings.stacks[w.repoPaths[0]];
+  assert.equal(stack.profile, 'ts');
+  assert.deepEqual(stack.checks.map((c) => c.command), ['npm test', 'npx --no-install tsc --noEmit', 'npm run lint']);
+  assert.ok(stack.checks.every((c) => c.pass === 'exit0'));
+  assert.match(JSON.parse(await w.rootExec('jd_status')).next, new RegExp(`Detected stacks:\\n- ${w.repoPaths[0]}: ts`));
+  await w.rootExec('jd_ask', { question: 'Should greet trim the name?', options: ['No', 'Yes'], recommended: 'No' });
+  for (const [k, v] of Object.entries({ permissions: { push: false, pr: false, remoteWrites: [], debugEnv: null }, budget: { timeMin: 30, tokens: 1e7 }, models: { planner: { provider: 'fake', model: 'm1' }, builder: { provider: 'fake', model: 'm1' }, checker: { provider: 'fake', model: 'm1' } }, crossModel: { enabled: false }, dial: 'balanced' })) await w.rootExec('jd_set', { key: k, value: v });
+  await w.rootExec('jd_advance', { to: 'prd_parity' });
+  const next = JSON.parse(await w.rootExec('jd_status')).next;
+  assert.match(next, /detected stack of each repo/);
+  assert.match(next, /: ts/);
+});
+
+test('v2-08: a repo with no profile is recorded as such, needs no question, and runs on shell checks', async () => {
+  const w = makeWorld();
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run = w.handle().run;
+  assert.deepEqual(run.state.settings.stacks[w.repoPaths[0]], { profile: null, candidates: [], checks: [] });
+  assert.match((await import('../lib/host/prompts.js')).nextStep({ ...run.state, phase: 'interview' }), /: no profile — shell checks only, no question needed/);
+  const done = await runToEnd(w);
+  assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
+});
+
+test('v2-08: TS guidance is in worker briefs of TS repos only; an ambiguous repo is resolved by jd_set stacks', async () => {
+  const GUIDE = /TypeScript repo notes:/;
+  for (const ts of [true, false]) {
+    const w = makeWorld({ repoFiles: () => (ts ? TS_FILES : {}) });
+    const seen = [];
+    honestBuilders(w);
+    for (const k of ['builder:N.1', 'builder:N.2', 'planner']) {
+      const inner = w.scripts[k];
+      w.scripts[k] = async (c) => { seen.push(c.prompt); return inner?.(c); };
+    }
+    await w.settleToFinal();
+    await runToEnd(w);
+    assert.ok(seen.length >= 2);
+    for (const p of seen) {
+      assert.equal(GUIDE.test(p), ts, `guidance ${ts ? 'present' : 'absent'}`);
+      if (ts) assert.match(p, /only when a requirement calls for it/);
+    }
+  }
+  // two repos, only the second is TS: leaves touching repo 1 get none
+  const w = makeWorld({ repos: 2, repoFiles: (i) => (i === 1 ? TS_FILES : {}) });
+  const seen = [];
+  honestBuilders(w);
+  for (const k of ['builder:N.1', 'builder:N.2']) { const inner = w.scripts[k]; w.scripts[k] = async (c) => { seen.push(c.prompt); return inner(c); }; }
+  await w.settleToFinal();
+  await runToEnd(w);
+  assert.ok(seen.length === 2 && seen.every((p) => !GUIDE.test(p)));
+  // ambiguous: two matching profiles ask one question; the answer is recorded
+  const { stacksNote } = await import('../lib/profiles/index.js');
+  const note = stacksNote({ '/r': { profile: null, candidates: ['ts', 'ios'], checks: [] } });
+  assert.match(note, /ambiguous \(ts or ios\).*ONE jd_ask question/);
+  await assert.rejects(() => w.rootExec('jd_set', { key: 'stacks', value: { [w.repoPaths[0]]: 'cobol' } }), /unknown profile/);
 });
