@@ -29,6 +29,9 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
   fs.mkdirSync(binDir);
   const ghLog = path.join(session, 'gh.log');
   fs.writeFileSync(path.join(binDir, 'gh'), `#!/bin/sh\necho "$@" >> "${ghLog}"\nif [ "$1" = "pr" ] && [ "$2" = "create" ]; then n=$(grep -c "^pr create" "${ghLog}"); echo "https://github.com/example/repo/pull/$n"; fi\n`, { mode: 0o755 });
+  // fake npm for workspace setup (v2-13): logs its args, "installs" by creating node_modules; fails while npm-fail exists
+  const npmLog = path.join(session, 'npm.log');
+  fs.writeFileSync(path.join(binDir, 'npm'), `#!/bin/sh\necho "$PWD $@" >> "${npmLog}"\nif [ -e "${path.join(session, 'npm-fail')}" ]; then echo "npm ERR! network unreachable" >&2; exit 1; fi\nmkdir -p node_modules\n`, { mode: 0o755 });
   process.env.PATH = `${binDir}:${process.env.PATH.split(':').filter((p) => !p.includes('jd-session-')).join(':')}`;
   const repoPaths = [];
   for (let i = 0; i < repos; i++) {
@@ -143,7 +146,7 @@ function makeWorld({ repos = 1, push = false, pr = false, crossModel = false, hu
     await rootExec('jd_parity', { key: 'final', restatement: 'everything' });
   }
 
-  return { session, repoPaths, root, worker, calls, answers, scripts, rootExec, settleToFinal, ghLog, handle: () => hub.runs.get(hub.bySession.get(root.id)) };
+  return { session, repoPaths, root, worker, calls, answers, scripts, rootExec, settleToFinal, ghLog, npmLog, handle: () => hub.runs.get(hub.bySession.get(root.id)) };
 }
 
 /** Default scripted builders: write the code, then submit. */
@@ -1017,7 +1020,7 @@ test('v2-08: matchProfiles picks profiles from marker sets (pure)', async () => 
   assert.deepEqual(matchProfiles([]), []);
   const twin = { ...PROFILES[0], name: 'ts2' };
   assert.deepEqual(matchProfiles(['package.json', 'tsconfig.json'], [PROFILES[0], twin]), ['ts', 'ts2']);
-  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'passRules', 'readiness', 'timeouts'].sort());
+  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'passRules', 'readiness', 'timeouts', 'workspaceSetup'].sort());
 });
 
 test('v2-08: a TS toy repo is detected when repos are set, and named in the next-step text; default checks come from package.json scripts', async () => {
@@ -1405,5 +1408,48 @@ test('v2-12: a tool check\'s workspacePath is remapped into the worktree (a path
     assert.deepEqual(seen, [path.join(repo.workPath, 'App.xcodeproj'), path.join(repo.workPath, 'App.xcodeproj'), '/elsewhere/Other.xcodeproj']);
   } finally {
     delete hub.overrides.executeTool;
+  }
+});
+
+// ---------------------------------------------------------------- v2-13 workspace setup (found preparing R2)
+test('v2-13: TS workspaceSetup installs declared deps with the lockfile\'s own tool, and nothing when there are no deps or they are installed', async () => {
+  const ts = (await import('../lib/profiles/ts.js')).default;
+  const dir = (files) => {
+    const d = tmpdir('jd-ws-');
+    for (const [f, c] of Object.entries(files)) fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true }), fs.writeFileSync(path.join(d, f), c);
+    return d;
+  };
+  const pkg = JSON.stringify({ devDependencies: { typescript: '*' } });
+  const cmd = (files) => ts.workspaceSetup(dir(files)).map((i) => i.command);
+  assert.deepEqual(cmd({ 'package.json': pkg, 'package-lock.json': '{}' }), ['npm ci']);
+  assert.deepEqual(cmd({ 'package.json': pkg, 'pnpm-lock.yaml': '' }), ['pnpm install --frozen-lockfile']);
+  assert.deepEqual(cmd({ 'package.json': pkg, 'yarn.lock': '' }), ['yarn install --frozen-lockfile']);
+  assert.deepEqual(cmd({ 'package.json': pkg, 'bun.lock': '' }), ['bun install --frozen-lockfile']);
+  assert.deepEqual(cmd({ 'package.json': pkg }), ['npm install --no-package-lock']);
+  assert.deepEqual(cmd({ 'package.json': pkg, 'node_modules/.keep': '' }), []);
+  assert.deepEqual(cmd({ 'package.json': '{"type":"module"}' }), []);
+  assert.deepEqual(cmd({}), []);
+});
+
+test('v2-13: jd_prepare installs a TS worktree\'s declared deps in the worktree; a failed install is reported and blocks the build', async () => {
+  for (const fail of [false, true]) {
+    const w = makeWorld({ repoFiles: () => TS_FILES });
+    honestBuilders(w);
+    if (fail) fs.writeFileSync(path.join(w.session, 'npm-fail'), '');
+    await w.settleToFinal();
+    const run = w.handle().run;
+    const wp = run.state.settings.repos[0].workPath;
+    const log = fs.readFileSync(w.npmLog, 'utf8');
+    assert.match(log, new RegExp(`^${wp} install --no-package-lock$`, 'm'), log);
+    const entry = run.state.preflight.find((p) => p.id === 'setup:repo1:deps');
+    assert.equal(entry?.ok, !fail, JSON.stringify(run.state.preflight));
+    if (!fail) {
+      assert.ok(fs.existsSync(path.join(wp, 'node_modules')));
+      const done = await runToEnd(w);
+      assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
+    } else {
+      assert.match(entry.detail, /network unreachable/);
+      await assert.rejects(w.rootExec('jd_run'), /preflight failed: install the repo's declared dependencies/);
+    }
   }
 });
