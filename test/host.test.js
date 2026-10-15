@@ -1614,6 +1614,7 @@ test('v2-13: workers are spawned without the tools they never need; the names co
     await S.spawnWorker(h, { role: 'builder', prompt: 'p', hiddenTools: hiddenToolsFor({ '/r': { profile: 'ios' } }) });
     assert.equal(starts.length, before + 1, 'the learnt names are reused: one start, no probe');
     assert.ok(!starts.at(-1).some((n) => n.startsWith('ios_')) && starts.at(-1).includes('mcp__xcode__XcodeRead'));
+    assert.equal(starts.filter((d) => d.includes('__junior_dev_probe__')).length, 1, 'probed once');
   } finally {
     hub.host = savedHost;
     hub.overrides = savedOv;
