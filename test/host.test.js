@@ -1632,3 +1632,32 @@ test('v2-13: the interview proposes the run settings in one question and explain
   assert.match(nextStep({ ...st, phase: 'final_parity' }), /jd_prepare gives this chat Full access[^]*no reason to work in place/);
   assert.throws(() => formatQuestion({ id: 'Q1', question: 'ok?', options: ['Use these settings'] }), /"Use these settings" and "Change something"/);
 });
+
+test('v2-13: every DSH host service the plugin uses is injected; tool checks run as the root agent and surface tool errors (R3)', async () => {
+  const { inject } = await import('../lib/index.js');
+  const used = new Set();
+  for (const dir of ['lib', 'lib/host', 'lib/engine', 'lib/profiles']) {
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.js'))) for (const m of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/hub\.host\.([a-zA-Z]+)/g)) used.add(m[1]);
+  }
+  for (const name of used) assert.ok(inject.includes(name), `hub.host.${name} is used but "${name}" is not in lib/index.js inject`);
+
+  const S = await import('../lib/host/services.js');
+  const calls = [];
+  const savedHost = hub.host;
+  const savedOv = hub.overrides;
+  const root = { id: 'ROOT' };
+  hub.host = {
+    sessionController: { resolveAgent: async () => ({ agent: root }) },
+    tools: { execute: async (exec) => (calls.push(exec), exec.name === 'ios_broken' ? { isError: true, error: { message: 'no booted simulator' }, content: [] } : { isError: false, value: { ok: true } }) },
+  };
+  hub.overrides = {};
+  try {
+    const h = { rootSessionId: 'ROOT' };
+    assert.deepEqual(await S.executeTool(h, { callId: 'c1', name: 'ios_status', arguments: {}, signal: new AbortController().signal }), { ok: true });
+    assert.equal(calls[0].agent, root);
+    await assert.rejects(S.executeTool(h, { callId: 'c2', name: 'ios_broken', arguments: {}, signal: new AbortController().signal }), /no booted simulator/);
+  } finally {
+    hub.host = savedHost;
+    hub.overrides = savedOv;
+  }
+});
