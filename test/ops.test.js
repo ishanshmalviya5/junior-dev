@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as Locks from '../lib/engine/locks.js';
 import * as G from '../lib/engine/git.js';
-import { exceeded, overspent } from '../lib/engine/budget.js';
+import { exceeded, overspent, runningMs } from '../lib/engine/budget.js';
+import { initialState, reduce } from '../lib/engine/reducer.js';
 import { runCheck } from '../lib/engine/checks.js';
 import { Run } from '../lib/engine/run.js';
 import { renderProgress } from '../lib/engine/progress.js';
@@ -37,7 +38,7 @@ test('U3: a second run on a locked checkout is refused; a dead run\'s lock is re
 test('U11: time and token limits each trip; per-node overspend is flagged', () => {
   const st = {
     settings: { budget: { tokens: 100, timeMin: 1 } },
-    usage: { tokens: 100, costUsd: 0.5, activeMs: 0, byNode: { 'N.1': { tokens: 400 } } },
+    usage: { tokens: 100, costUsd: 0.5, activeMs: 0, runMs: 0, runSince: new Date(Date.now() - 120000).toISOString(), byNode: { 'N.1': { tokens: 400 } } },
     history: [{ ok: true, to: 'build', ts: new Date(Date.now() - 120000).toISOString() }],
     tree: { nodes: { 'N.1': { id: 'N.1', budgetShare: 200 }, 'N.2': { id: 'N.2', budgetShare: 200 } } },
   };
@@ -46,6 +47,22 @@ test('U11: time and token limits each trip; per-node overspend is flagged', () =
   assert.match(ex.join(), /tokens 100 ≥ 100/);
   assert.match(ex.join(), /time 2 min ≥ 1 min/);
   assert.deepEqual(overspent(st), ['N.1']);
+});
+
+test('U11: the time limit counts only time the loop runs, so a run resumed a day later is not stopped at once (R2)', () => {
+  const t0 = Date.parse('2026-10-14T10:00:00Z');
+  const at = (min) => new Date(t0 + min * 60000).toISOString();
+  const st = initialState();
+  st.settings.budget = { timeMin: 60, tokens: 0 };
+  const ev = (type, min, data) => reduce(st, { type, ts: at(min), data });
+  ev('phase', 0, { from: 'final_parity', to: 'build' });
+  ev('side', 10, { side: 'stopped', reason: 'budget reached' });
+  ev('side', 1440, { side: null });
+  assert.equal(runningMs(st, { now: t0 + 1445 * 60000 }), 15 * 60000);
+  assert.deepEqual(exceeded(st, { now: t0 + 1445 * 60000 }), []);
+  assert.match(exceeded(st, { now: t0 + 1500 * 60000 }).join(), /time 70 min ≥ 60 min/);
+  ev('phase', 1460, { from: 'deliver', to: 'done' });
+  assert.equal(runningMs(st, { now: t0 + 9999 * 60000 }), 30 * 60000);
 });
 
 test('S7: the check runner captures exit code and output and enforces timeouts', async () => {
