@@ -30,7 +30,7 @@ DSH_HOME=~/.dsh scripts/deploy.sh web HEAD dsh  # deploy a COMMIT into dsh profi
 ```
 
 - Tests must run serially (`--test-concurrency=1`). The host tests mutate `process.env` (`JD_HOME`, `JD_WORKTREES_ROOT`, `PATH` with a fake `gh`) and share the `hub` singleton.
-- The full suite takes about 40–60 s. It builds real throwaway git repos with local bare remotes in the OS temp dir. `v2` has 128 tests, including `test/client.test.js`, which renders the progress dock with a stub React.
+- The full suite takes about 40–60 s. It builds real throwaway git repos with local bare remotes in the OS temp dir. `v2` has 131 tests, including `test/client.test.js`, which renders the progress dock with a stub React.
 - Deploys are commit-only. `deploy.sh` snapshots a commit into a detached worktree under `$DSH_HOME/local-plugins/.deployed/`, and uncommitted changes are never deployed. Ask before restarting dsh web (see the user's global CLAUDE.md for the host vs container instances on port 3080).
 
 ## Architecture
@@ -76,7 +76,7 @@ Every check run goes through `runAnyCheck`: the loop, preflight and `jd_decide`.
 Timeouts come from the repo's stack profile unless a limit is given explicitly.
 
 ### Stack profiles (`lib/profiles/`)
-- **Fields:** each profile has `markers`, `readiness`, `defaultChecks`, `passRules`, `guidance`, `hiddenTools`, `ownTools`, `humanEvidence`, `timeouts` and `workspaceSetup`. `workspaceSetup` runs in `jd_prepare` for a fresh worktree (TS: install the declared deps with the lockfile's own tool). A failed setup is a failed preflight entry and blocks the build.
+- **Fields:** each profile has `markers`, `readiness`, `defaultChecks`, `passRules`, `guidance`, `rootNote`, `hiddenTools`, `ownTools`, `humanEvidence`, `timeouts` and `workspaceSetup`. `workspaceSetup` runs in `jd_prepare` for a fresh worktree (TS: install the declared deps with the lockfile's own tool). A failed setup is a failed preflight entry and blocks the build.
 - **Detection:** happens when repos are set (`jd_set repos`). The result is stored as `settings.stacks` per repo, and an ambiguous repo is resolved with `jd_set stacks`. A repo with no profile runs on shell checks only.
 - **Worker tools:** `WORKER_HIDDEN` in `lib/profiles/index.js` (Xcode MCP, Creator and root-only, goal, plan-mode and messaging tools) plus each absent profile's `ownTools` (dsh-ios's `ios_*` when no repo is iOS) are filtered out of every worker. `services.startChild` learns the names DSH can filter from its `tools.restrict()` error and expands the RegExps. Tools DSH can't filter out of a child (`subagent`, `workflow` and the like) are denied by the gate.
 - **What a profile feeds:**
