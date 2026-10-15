@@ -1027,7 +1027,7 @@ test('v2-08: matchProfiles picks profiles from marker sets (pure)', async () => 
   assert.deepEqual(matchProfiles([]), []);
   const twin = { ...PROFILES[0], name: 'ts2' };
   assert.deepEqual(matchProfiles(['package.json', 'tsconfig.json'], [PROFILES[0], twin]), ['ts', 'ts2']);
-  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'ownTools', 'passRules', 'readiness', 'timeouts', 'workspaceSetup'].sort());
+  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'ownTools', 'passRules', 'readiness', 'rootNote', 'timeouts', 'workspaceSetup'].sort());
 });
 
 test('v2-08: a TS toy repo is detected when repos are set, and named in the next-step text; default checks come from package.json scripts', async () => {
@@ -1694,4 +1694,11 @@ test('v2-14: briefs show tool checks in the worktree, the reviewer gets the sour
   } finally {
     delete hub.overrides.executeTool;
   }
+});
+
+test('v2-14: the root agent is told iOS checks are dsh-ios tool checks run in the worktree, so a source-repo folder grant does not matter (R3)', async () => {
+  const { stacksNote } = await import('../lib/profiles/index.js');
+  const n = stacksNote({ '/r/app': { profile: 'ios', candidates: ['ios'] }, '/r/core': { profile: 'ts', candidates: ['ts'] } });
+  assert.match(n, /dsh-ios tool checks \(ios_build, ios_test\), never xcodebuild[^]*does not matter/);
+  assert.doesNotMatch(stacksNote({ '/r/core': { profile: 'ts', candidates: ['ts'] } }), /xcodebuild/);
 });
