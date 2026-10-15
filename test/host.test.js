@@ -240,6 +240,7 @@ test('T4 + T6: without push permission the gate blocks a worker push; workers ca
       { name: 'bash', arguments: { command: `echo x >> ${path.join(run.dir, 'state', 'events.jsonl')}` } },
       { name: 'write', arguments: { path: path.join(run.dir, 'requirements.md'), content: 'x' } },
       { name: 'bash', arguments: { command: 'git fetch origin' } },
+      { name: 'subagent', arguments: { prompt: 'do it for me' } },
     ]) {
       denials.push(judge({ ...call, agent: w.worker }, h));
     }
@@ -253,6 +254,8 @@ test('T4 + T6: without push permission the gate blocks a worker push; workers ca
   assert.match(denials[2].reason, /state is written only by the plugin/);
   assert.match(denials[3].reason, /written with jd_write_doc/);
   assert.equal(denials[4], null, 'remote reads pass');
+  assert.match(denials[5].reason, /workers work alone/, 'DSH cannot filter subagent out of a child, so the gate denies it');
+  assert.equal(judge({ name: 'subagent', arguments: {}, agent: w.root }, w.handle()), null, 'the root agent may still delegate');
   assert.equal(run.state.phase, 'done');
   assert.equal(git(path.join(w.session, 'remote1.git'), 'branch', '--list').trim(), '', 'nothing reached the remote');
 });
@@ -1024,7 +1027,7 @@ test('v2-08: matchProfiles picks profiles from marker sets (pure)', async () => 
   assert.deepEqual(matchProfiles([]), []);
   const twin = { ...PROFILES[0], name: 'ts2' };
   assert.deepEqual(matchProfiles(['package.json', 'tsconfig.json'], [PROFILES[0], twin]), ['ts', 'ts2']);
-  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'passRules', 'readiness', 'timeouts', 'workspaceSetup'].sort());
+  assert.deepEqual(Object.keys(PROFILES[0]).sort(), ['defaultChecks', 'guidance', 'hiddenTools', 'humanEvidence', 'markers', 'name', 'ownTools', 'passRules', 'readiness', 'timeouts', 'workspaceSetup'].sort());
 });
 
 test('v2-08: a TS toy repo is detected when repos are set, and named in the next-step text; default checks come from package.json scripts', async () => {
@@ -1244,15 +1247,18 @@ test('v2-11: a not-ready dsh-ios (or a missing status tool) blocks preflight wit
   }
 });
 
-test('v2-11: Xcode MCP tools are in the worker deny list of iOS repos only, dsh-ios tools are not; human checks carry a screenshot reference', async () => {
+test('v2-11: Xcode MCP tools are in every worker deny list, dsh-ios tools only where no repo is iOS; human checks carry a screenshot reference', async () => {
   const { hiddenToolsFor } = await import('../lib/profiles/index.js');
   const { XCODE_TOOL_NAMES } = await import('../lib/engine/classify.js');
-  const avail = ['mcp__Xcode__BuildProject', 'mcp__other-server__XcodeRead', 'mcp__github__create_issue', 'ios_build', 'ios_sim_screenshot', 'mcp__x__NotAnXcodeTool'];
+  const avail = ['mcp__Xcode__BuildProject', 'mcp__other-server__XcodeRead', 'mcp__github__create_issue', 'ios_build', 'ios_sim_screenshot', 'mcp__x__NotAnXcodeTool', 'bash', 'plugin_manager', 'cordis_inspect_query'];
   const hidden = hiddenToolsFor({ '/r': { profile: 'ios' } }, avail);
   assert.ok(hidden.includes('mcp__Xcode__BuildProject') && hidden.includes('mcp__other-server__XcodeRead'));
-  assert.ok(!hidden.some((n) => /^ios_|github|NotAnXcodeTool/.test(n)));
+  assert.ok(hidden.includes('plugin_manager') && hidden.includes('cordis_inspect_query'));
+  assert.ok(!hidden.some((n) => /^ios_|github|NotAnXcodeTool|^bash$/.test(n)));
   assert.ok(hidden.includes(`mcp__xcode__${XCODE_TOOL_NAMES[0]}`));
-  assert.deepEqual(hiddenToolsFor({ '/r': { profile: 'ts' } }, avail), []);
+  const tsHidden = hiddenToolsFor({ '/r': { profile: 'ts' } }, avail);
+  assert.ok(tsHidden.includes('ios_build') && tsHidden.includes('mcp__Xcode__BuildProject'));
+  assert.ok(!tsHidden.some((n) => /github|NotAnXcodeTool|^bash$/.test(n)));
 
   for (const ios of [true, false]) {
     const w = makeWorld({ repoFiles: () => (ios ? IOS_FILES : {}) });
@@ -1270,8 +1276,9 @@ test('v2-11: Xcode MCP tools are in the worker deny list of iOS repos only, dsh-
       assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
       assert.ok(hiddenSeen.length >= 2);
       for (const hs of hiddenSeen) {
-        assert.equal(hs.includes('mcp__xcode__BuildProject'), ios);
-        assert.ok(!hs.some((n) => n.startsWith('ios_')));
+        assert.equal(hs.includes('mcp__xcode__BuildProject'), ios); // the iOS profile also names them, for a server called "xcode"
+        assert.ok(hs.some((t) => t instanceof RegExp && t.test('mcp__any__XcodeRead')));
+        assert.equal(hs.some((t) => t instanceof RegExp && t.test('ios_build')), !ios);
       }
       const hc = asks.find((q) => q.id === 'HC:H1');
       if (ios) {
@@ -1573,4 +1580,54 @@ test('v2-13: repo suggestions come from the final review only, not from every ro
   const run = await runToEnd(w);
   assert.equal(reviews, 2);
   assert.deepEqual(run.state.notes.filter((n) => n.kind === 'suggestion').map((n) => n.text), ['repo1: Add a lint script (ESLint, import/no-default-export)']);
+});
+
+test('v2-13: workers are spawned without the tools they never need; the names come from DSH\'s own filter error (R2)', async () => {
+  const S = await import('../lib/host/services.js');
+  const { hiddenToolsFor } = await import('../lib/profiles/index.js');
+  const KNOWN = ['bash', 'read', 'edit', 'jd_submit', 'jd_status', 'plugin_manager', 'cordis_inspect_query', 'ios_build', 'ios_sim_tap', 'mcp__xcode__XcodeRead', 'mcp__xcode__BuildProject', 'mcp__github__create_issue'];
+  const starts = [];
+  const savedHost = hub.host;
+  const savedOv = hub.overrides;
+  hub.host = {
+    logger: () => console,
+    sessionController: { resolveAgent: async () => ({ agent: { id: 'ROOT' } }) },
+    subagents: {
+      async start(_kind, req) {
+        starts.push(req.toolFilter.deny);
+        const unknown = req.toolFilter.deny.filter((n) => !KNOWN.includes(n));
+        if (unknown.length) throw new Error(`tools.restrict() names unknown global tools ${unknown.map((n) => `"${n}"`).join(', ')}; known global tools: ${[...KNOWN].sort().join(', ')}`);
+        return { id: `child-${starts.length}`, result: Promise.resolve({ output: [{ type: 'text', text: 'done' }], stopReason: 'completed' }), dispose: async () => {} };
+      },
+    },
+  };
+  hub.overrides = { tokensOf: async () => 0 };
+  try {
+    const h = { key: 'k', rootSessionId: 'ROOT', worker: null };
+    const res = await S.spawnWorker(h, { role: 'builder', prompt: 'p', hiddenTools: hiddenToolsFor({ '/r': { profile: 'ts' } }) });
+    assert.equal(res.stopReason, 'completed');
+    const final = starts.at(-1);
+    for (const n of ['jd_status', 'plugin_manager', 'cordis_inspect_query', 'ios_build', 'ios_sim_tap', 'mcp__xcode__XcodeRead', 'mcp__xcode__BuildProject']) assert.ok(final.includes(n), n);
+    for (const n of ['bash', 'read', 'edit', 'jd_submit', 'mcp__github__create_issue']) assert.ok(!final.includes(n), n);
+    assert.ok(final.every((n) => KNOWN.includes(n)), 'only names DSH can filter');
+    const before = starts.length;
+    await S.spawnWorker(h, { role: 'builder', prompt: 'p', hiddenTools: hiddenToolsFor({ '/r': { profile: 'ios' } }) });
+    assert.equal(starts.length, before + 1, 'the learnt names are reused: one start, no probe');
+    assert.ok(!starts.at(-1).some((n) => n.startsWith('ios_')) && starts.at(-1).includes('mcp__xcode__XcodeRead'));
+  } finally {
+    hub.host = savedHost;
+    hub.overrides = savedOv;
+  }
+});
+
+test('v2-13: the interview proposes the run settings in one question and explains who grants worktree write access', async () => {
+  const { nextStep } = await import('../lib/host/prompts.js');
+  const { formatQuestion } = await import('../lib/engine/run.js');
+  const st = { phase: 'interview', side: null, settings: {} };
+  const iv = nextStep(st);
+  assert.match(iv, /ONE jd_ask/);
+  assert.match(iv, /"Use these settings" \(recommended\) and "Change some"/);
+  assert.match(iv, /jd_prepare gives this chat Full access/);
+  assert.match(nextStep({ ...st, phase: 'final_parity' }), /jd_prepare gives this chat Full access[^]*no reason to work in place/);
+  assert.throws(() => formatQuestion({ id: 'Q1', question: 'ok?', options: ['Use these settings'] }), /"Use these settings" and "Change something"/);
 });
