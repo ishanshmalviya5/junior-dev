@@ -1509,3 +1509,68 @@ test('v2-13: builder briefs carry the repo rules, the bash description note, wor
   for (const p of ['test/a.js', 'src/a.test.ts', 'ToyTests/ToyTests.swift', '__tests__/x.js', 'pkg/spec/x.rb']) assert.ok(isTestPath(p), p);
   for (const p of ['src/discount.ts', 'index.js', 'CONTEXT.md', 'Toy/App.swift']) assert.ok(!isTestPath(p), p);
 });
+
+test('v2-13: every loop start and resume gives the workers write access; if it cannot, the run stops with the reason (R2)', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  let grants = 0;
+  let grant = true;
+  hub.overrides.setFullAccess = async () => (grants++, grant);
+  await w.settleToFinal();
+  assert.equal(grants, 1); // jd_prepare
+  w.handle().run.set('budget', { tokens: 1500 });
+  let run = await runToEnd(w);
+  assert.match(run.state.sideReason, /budget reached: tokens/);
+  assert.equal(grants, 2);
+  const builders = w.calls.spawns.filter((s) => s.role === 'builder').length;
+  grant = false;
+  await w.rootExec('jd_set', { key: 'budget', value: { tokens: 1e7 } });
+  run = await runToEnd(w);
+  assert.equal(run.state.side, 'stopped');
+  assert.match(run.state.sideReason, /could not give the workers write access.*Full access/);
+  assert.equal(w.calls.spawns.filter((s) => s.role === 'builder').length, builders, 'no worker starts without write access');
+  grant = true;
+  run = await runToEnd(w);
+  assert.equal(grants, 4);
+  assert.equal(run.state.phase, 'done');
+});
+
+test('v2-13: a review fixer that blocks ends the review rounds, and a rolled-back fix is not reviewed again (R2)', async () => {
+  const finding = '{"findings":[{"axis":"spec","kind":"missing","requirement":"A1","problem":"glossary entries missing","severity":"high"}],"suggestions":["add a lint step"]}';
+  const blocked = makeWorld({ human: false });
+  honestBuilders(blocked);
+  let reviews = 0;
+  blocked.scripts.reviewer = async () => (reviews++, finding);
+  blocked.scripts.fixer = async ({ exec }) => exec('jd_block', { what: 'cannot write the worktree', why: 'sandbox', how: 'tried' });
+  await blocked.settleToFinal();
+  let run = await runToEnd(blocked);
+  assert.deepEqual(blocked.calls.spawns.filter((s) => s.role === 'fixer').map((s) => s.checkId), ['RV1']);
+  assert.equal(reviews, 1);
+  assert.equal(run.state.phase, 'done');
+
+  const broken = makeWorld({ human: false });
+  honestBuilders(broken);
+  reviews = 0;
+  broken.scripts.reviewer = async () => (reviews++, finding);
+  broken.scripts.fixer = async ({ run: r }) => fs.writeFileSync(path.join(r.state.settings.repos[0].workPath, 'greet.js'), 'export const greet = () => "nope";\n');
+  await broken.settleToFinal();
+  run = await runToEnd(broken);
+  assert.deepEqual(broken.calls.spawns.filter((s) => s.role === 'fixer').map((s) => s.checkId), ['RV1', 'RV2', 'RV3']);
+  assert.equal(reviews, 1, 'each fix was rolled back, so the code never changed and is not reviewed again');
+  assert.equal(run.state.phase, 'done');
+});
+
+test('v2-13: repo suggestions come from the final review only, not from every round (R2)', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  let reviews = 0;
+  w.scripts.reviewer = async () =>
+    ++reviews === 1
+      ? '{"findings":[{"axis":"standards","problem":"breaks the naming rule","severity":"med"}],"suggestions":["Add ESLint with import/no-default-export"]}'
+      : '{"findings":[],"suggestions":["Add a lint script (ESLint, import/no-default-export)"]}';
+  w.scripts.fixer = async ({ exec }) => exec('jd_submit', { summary: 'renamed' });
+  await w.settleToFinal();
+  const run = await runToEnd(w);
+  assert.equal(reviews, 2);
+  assert.deepEqual(run.state.notes.filter((n) => n.kind === 'suggestion').map((n) => n.text), ['repo1: Add a lint script (ESLint, import/no-default-export)']);
+});
