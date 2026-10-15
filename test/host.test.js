@@ -1152,9 +1152,12 @@ test('v2-09: tool checks also work on the jd_preflight path', async () => {
 
 // ---------------------------------------------------------------- v2-11 iOS profile
 const IOS_FILES = { 'App.xcodeproj/project.pbxproj': '// toy\n' };
+const iosCalls = [];
 const iosTool = (over = {}) => async (_h, c) => {
+  iosCalls.push(c);
   if (over[c.name]) return typeof over[c.name] === 'function' ? over[c.name](c) : over[c.name];
   if (c.name === 'ios_status') return { ready: true, reasons: [] };
+  if (c.name === 'ios_sim_build_run') return { ok: true, bundleId: 'dev.example.app' };
   if (c.name === 'ios_sim_screenshot') return { path: '/tmp/shots/after.png' };
   throw new Error(`unscripted tool ${c.name}`);
 };
@@ -1283,6 +1286,11 @@ test('v2-11: Xcode MCP tools are in every worker deny list, dsh-ios tools only w
       const hc = asks.find((q) => q.id === 'HC:H1');
       if (ios) {
         assert.match(hc.detail, /ios screenshot \/tmp\/shots\/after\.png/);
+        // the worktree's app is built and launched before the screenshot (R3: it showed the home screen)
+        const names = iosCalls.map((c) => c.name);
+        const br = iosCalls.findLast((c) => c.name === 'ios_sim_build_run');
+        assert.ok(br && names.lastIndexOf('ios_sim_build_run') < names.lastIndexOf('ios_sim_screenshot'));
+        assert.ok(br.arguments.projectPath.startsWith(run.state.settings.repos[0].workPath), br.arguments.projectPath);
         assert.ok(run.state.notes.some((n) => n.kind === 'human_evidence' && /after\.png/.test(n.text)));
       } else {
         assert.doesNotMatch(hc.detail, /screenshot/);
@@ -1659,5 +1667,31 @@ test('v2-13: every DSH host service the plugin uses is injected; tool checks run
   } finally {
     hub.host = savedHost;
     hub.overrides = savedOv;
+  }
+});
+
+test('v2-14: briefs show tool checks in the worktree, the reviewer gets the source → worktree map, and preflight refuses tool checks on a source repo (R3)', async () => {
+  const { workerBrief, fixBrief, reviewBrief } = await import('../lib/host/prompts.js');
+  const run = { name: 'f', dir: '/s/docs/f', state: { settings: { repos: [{ path: '/src/app', workPath: '/wt/app' }] }, tree: { nodes: {} }, facts: [] } };
+  const node = { id: 'N.1', title: 't', goal: 'g', doneWhen: [], traces: { requirements: [] }, checks: [{ id: 'N.1/k1', tool: 'ios_build', arguments: { workspacePath: '/src/app/App.xcworkspace' }, pass: 'ios-build' }], provides: [], uses: [] };
+  const wb = workerBrief({ role: 'builder', node, run, contracts: [], workPaths: ['/wt/app'] });
+  assert.match(wb, /\/wt\/app\/App\.xcworkspace/);
+  assert.doesNotMatch(wb, /\/src\/app\/App\.xcworkspace/);
+  const fb = fixBrief({ run, check: { id: 'I1', kind: 'automated', text: 'build', requirementIds: ['A1'], ...node.checks[0] }, output: '', workPaths: ['/wt/app'] });
+  assert.match(fb, /Command: [^\n]*\/wt\/app\/App\.xcworkspace/);
+  assert.match(reviewBrief({ run, workPaths: ['/wt/app'] }), /\/src\/app → \/wt\/app[^]*not a finding/);
+
+  const w = makeWorld({ repoFiles: () => IOS_FILES, human: false });
+  hub.overrides.executeTool = iosTool();
+  try {
+    await w.settleToFinal().catch(() => {});
+    const h = w.handle();
+    if (h.run.state.phase !== 'preflight') h.run.store.commit('phase', { from: h.run.state.phase, to: 'preflight' });
+    await assert.rejects(
+      w.rootExec('jd_preflight', { items: [{ id: 'ios-build', what: 'build works', tool: 'ios_build', arguments: { workspacePath: path.join(w.repoPaths[0], 'App.xcodeproj') }, pass: 'ios-build' }] }),
+      /must not run on a source repo \(ios-build\)[^]*readiness check/,
+    );
+  } finally {
+    delete hub.overrides.executeTool;
   }
 });
