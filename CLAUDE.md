@@ -7,14 +7,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 junior-dev is a DSH (DeepSeek Harness, `@deepseek-ai/dsh`) plugin package. It ships an agent preset ("Junior Dev"): you paste a PRD, it interviews the developer until they agree it has understood the work (parity), then builds, verifies and delivers the feature unattended. The run is driven by plugin code (a state machine plus a scheduler), not by the LLM. Plain JavaScript ES modules, Node ≥ 26, macOS only, with no runtime dependencies (`@deepseek-ai/cordis` is a peer dependency).
 
 **Branches:**
-- `main` is v1, the version that is deployed.
-- `v2` adds:
+- `main` now carries v2 (fast-forwarded from `v2` on 2026-10-16, after R2 and R3 passed). v1 is the history before that.
+- v2 added:
   - practices adapted from mattpocock/skills;
   - stack profiles, TS and iOS;
   - tool-call checks;
   - creator capability.
 
-This file describes `v2`. v2 is only accepted once it passes the manual real-AI runs R2 and R3.
+This file describes v2. It passed the manual real-AI runs R2 (TS) and R3 (iOS, and mixed iOS + TS).
 
 **Hard rule: nothing goes to a remote.** No push, no PR, no remote branch, no remote ticket. This is a local test project.
 
@@ -30,7 +30,7 @@ DSH_HOME=~/.dsh scripts/deploy.sh web HEAD dsh  # deploy a COMMIT into dsh profi
 ```
 
 - Tests must run serially (`--test-concurrency=1`). The host tests mutate `process.env` (`JD_HOME`, `JD_WORKTREES_ROOT`, `PATH` with a fake `gh`) and share the `hub` singleton.
-- The full suite takes about 40–60 s. It builds real throwaway git repos with local bare remotes in the OS temp dir. `v2` has 131 tests, including `test/client.test.js`, which renders the progress dock with a stub React.
+- The full suite takes about 40–60 s. It builds real throwaway git repos with local bare remotes in the OS temp dir. `v2` has 132 tests, including `test/client.test.js`, which renders the progress dock with a stub React.
 - Deploys are commit-only. `deploy.sh` snapshots a commit into a detached worktree under `$DSH_HOME/local-plugins/.deployed/`, and uncommitted changes are never deployed. Ask before restarting dsh web (see the user's global CLAUDE.md for the host vs container instances on port 3080).
 
 ## Architecture
