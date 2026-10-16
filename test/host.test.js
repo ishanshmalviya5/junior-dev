@@ -1702,3 +1702,30 @@ test('v2-14: the root agent is told iOS checks are dsh-ios tool checks run in th
   assert.match(n, /dsh-ios tool checks \(ios_build, ios_test\), never xcodebuild[^]*does not matter/);
   assert.doesNotMatch(stacksNote({ '/r/core': { profile: 'ts', candidates: ['ts'] } }), /xcodebuild/);
 });
+
+test('v2-14: a regression failure is re-run once before the leaf is rolled back, and a failed launch before the evidence screenshot is only noted (R3)', async () => {
+  const w = makeWorld({ human: false });
+  honestBuilders(w);
+  await w.settleToFinal();
+  const run = w.handle().run;
+  const cnt = path.join(w.session, 'runs');
+  // N.1's check passes after its work, then fails exactly once more: on N.2's regression run
+  setLeaf(run, 'N.1', { checks: [{ id: 'N.1/k1', command: `n=$(cat ${cnt} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${cnt}; [ -f greet.js ] || exit 1; [ $n -eq 3 ] && exit 1; exit 0`, cwd: w.repoPaths[0] }] });
+  const done = await runToEnd(w);
+  assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
+  assert.equal(w.calls.spawns.filter((s) => s.role === 'builder' && s.nodeId === 'N.2').length, 1, 'N.2 was not rolled back');
+  assert.ok(done.state.notes.some((n) => n.kind === 'flaky_check' && /N\.1/.test(n.text)));
+
+  const wi = makeWorld({ repoFiles: () => IOS_FILES });
+  honestBuilders(wi);
+  hub.overrides.executeTool = iosTool({ ios_sim_build_run: () => { throw new Error('tool "ios_sim_build_run" returned invalid output: value is not lossless JSON'); } });
+  try {
+    await wi.settleToFinal();
+    const r = await runToEnd(wi);
+    assert.equal(r.state.phase, 'done', r.state.sideReason ?? '');
+    const ev = r.state.notes.filter((n) => n.kind === 'human_evidence').map((n) => n.text).join('\n');
+    assert.match(ev, /ios_sim_build_run before the screenshot failed[^]*ios_sim_screenshot -> \/tmp\/shots\/after\.png/);
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+});
