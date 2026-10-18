@@ -30,7 +30,7 @@ DSH_HOME=~/.dsh scripts/deploy.sh web HEAD dsh  # deploy a COMMIT into dsh profi
 ```
 
 - Tests must run serially (`--test-concurrency=1`). The host tests mutate `process.env` (`JD_HOME`, `JD_WORKTREES_ROOT`, `PATH` with a fake `gh`) and share the `hub` singleton.
-- The full suite takes about 40–60 s. It builds real throwaway git repos with local bare remotes in the OS temp dir. `v2` has 132 tests, including `test/client.test.js`, which renders the progress dock with a stub React.
+- The full suite takes about 40–60 s. It builds real throwaway git repos with local bare remotes in the OS temp dir. `v2` has 136 tests, including `test/client.test.js`, which renders the progress dock with a stub React.
 - Deploys are commit-only. `deploy.sh` snapshots a commit into a detached worktree under `$DSH_HOME/local-plugins/.deployed/`, and uncommitted changes are never deployed. Ask before restarting dsh web (see the user's global CLAUDE.md for the host vs container instances on port 3080).
 
 ## Architecture
@@ -78,6 +78,8 @@ Timeouts come from the repo's stack profile unless a limit is given explicitly.
 ### Stack profiles (`lib/profiles/`)
 - **Fields:** each profile has `markers`, `readiness`, `defaultChecks`, `passRules`, `guidance`, `rootNote`, `hiddenTools`, `ownTools`, `humanEvidence`, `timeouts` and `workspaceSetup`. `workspaceSetup` runs in `jd_prepare` for a fresh worktree (TS: install the declared deps with the lockfile's own tool). A failed setup is a failed preflight entry and blocks the build.
 - **Detection:** happens when repos are set (`jd_set repos`). The result is stored as `settings.stacks` per repo, and an ambiguous repo is resolved with `jd_set stacks`. A repo with no profile runs on shell checks only.
+  - The repo root wins. Only when it matches nothing are the folders below it searched (3 levels deep; dependency and build folders are skipped), e.g. `ios/App.xcodeproj` or `bff/packages/api`. The matched folders are stored as `dirs`. Their shell checks get a `cwd`, and workspace setup and the screenshot launch run there.
+  - It is still one profile per repo: iOS and a BFF in one repo come out ambiguous.
 - **Worker tools:** `WORKER_HIDDEN` in `lib/profiles/index.js` (Xcode MCP, Creator and root-only, goal, plan-mode and messaging tools) plus each absent profile's `ownTools` (dsh-ios's `ios_*` when no repo is iOS) are filtered out of every worker. `services.startChild` learns the names DSH can filter from its `tools.restrict()` error and expands the RegExps. Tools DSH can't filter out of a child (`subagent`, `workflow` and the like) are denied by the gate.
 - **What a profile feeds:**
   - a leaf's brief gets the guidance for the repo(s) its checks target;
@@ -86,8 +88,10 @@ Timeouts come from the repo's stack profile unless a limit is given explicitly.
 - **TS:** uses the repo's own `test`, typecheck and `lint` scripts. It installs only the repo's declared deps (in `workspaceSetup`), never extra tooling.
 - **iOS:** junior-dev knows **only dsh-ios** (ADR 0001). It expects these tools: `ios_status`, `ios_build`, `ios_test` and `ios_sim_screenshot`. Their exact contract is in `docs/junior-dev-v2/handoff-dsh-ios.md`. dsh-ios provides all four (verified live in DSH at dsh-ios 0a5ff64).
   - It is simulator-only: never sign, archive or upload.
+  - Default checks name a shared scheme. They use the only scheme, or the one named after the project, and the test check uses a scheme that has tests. When the choice is unclear, the check carries a `note` for the root agent. The simulator is dsh-ios's choice.
+  - The `ios-test` pass rule fails a run in which no test passed (zero tests, or all skipped).
   - The gate denies workers any `mcp__<server>__<Xcode tool>`, whatever the server is called.
-  - Human checks in iOS repos carry a simulator screenshot.
+  - Human checks in iOS repos carry a simulator screenshot. If the capture fails, the check says it is "unverified by screenshot".
 
 ### Tools
 - **Root tools** (developer-facing agent) drive the interview and the documents: `jd_status`, `jd_start`, `jd_ask`, `jd_parity`, `jd_write_doc`, `jd_tree`, `jd_set` (including `repos`, `stacks` and `bundles`), `jd_advance`, `jd_run` and others.
@@ -141,6 +145,7 @@ Rule K1 refuses a leaf with no valid kind. The item states are `new → ready �
 
 ### Safety invariants (enforced in code; tests cover them)
 - **Remote writes are gated.** `lib/engine/classify.js` classifies git push, PRs, databases, cloud CLIs, MCP write tools, and iOS uploads (altool, notarytool, Transporter, `xcodebuild -exportArchive`, fastlane). The gate blocks them unless the interview recorded permission. Read-only remote calls pass.
+- **Worker write boundary.** Workers change files only inside the run's work paths and the temp dir, never in the developer's own checkout (`gate.js`, `bashWriteOutside`). This covers write and edit tools, and bash commands after following `workdir`, `cd`, redirects and operands. It is a heuristic: code a command runs, such as `node -e`, is not seen. The root agent is not limited by it.
 - **Branch rules.** `commit` and `rollback` in `lib/engine/git.js` refuse any branch that is not `junior-dev/*`. Pushes go only to `junior-dev/*` and never use force.
 - **Locks.** Checkouts are locked per run (`lib/engine/locks.js`).
 

@@ -1055,7 +1055,7 @@ test('v2-08: a repo with no profile is recorded as such, needs no question, and 
   honestBuilders(w);
   await w.settleToFinal();
   const run = w.handle().run;
-  assert.deepEqual(run.state.settings.stacks[w.repoPaths[0]], { profile: null, candidates: [], checks: [] });
+  assert.deepEqual(run.state.settings.stacks[w.repoPaths[0]], { profile: null, candidates: [], dirs: [], found: {}, checks: [] });
   assert.match((await import('../lib/host/prompts.js')).nextStep({ ...run.state, phase: 'interview' }), /: no profile — shell checks only, no question needed/);
   const done = await runToEnd(w);
   assert.equal(done.state.phase, 'done', done.state.sideReason ?? '');
@@ -1725,6 +1725,144 @@ test('v2-14: a regression failure is re-run once before the leaf is rolled back,
     assert.equal(r.state.phase, 'done', r.state.sideReason ?? '');
     const ev = r.state.notes.filter((n) => n.kind === 'human_evidence').map((n) => n.text).join('\n');
     assert.match(ev, /ios_sim_build_run before the screenshot failed[^]*ios_sim_screenshot -> \/tmp\/shots\/after\.png/);
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+});
+
+// ---------------------------------------------------------------- X2: independent review 2 (findings 1, 2, 4, 7)
+test('X2#1: an iOS test run with zero tests, or only skipped ones, fails the ios-test rule', async () => {
+  const { passRuleByName } = await import('../lib/profiles/index.js');
+  const rule = passRuleByName('ios-test');
+  const r = (o) => rule({ counts: { total: 5, passed: 5, failed: 0, skipped: 0, expectedFailures: 0, notRun: 0, ...o }, failures: [] });
+  assert.equal(r({}).ok, true);
+  assert.equal(r({ passed: 3, skipped: 2 }).ok, true, 'some skipped is fine while something passed');
+  const none = r({ total: 0, passed: 0 });
+  assert.equal(none.ok, false);
+  assert.match(none.output, /no test passed \(none ran\)/);
+  const skipped = r({ passed: 0, skipped: 5 });
+  assert.equal(skipped.ok, false);
+  assert.match(skipped.output, /no test passed \(5 skipped\)[^]*scheme/);
+});
+
+test('X2#2: workers change files only inside the run\'s work paths (and the temp dir); the root agent is not limited', async () => {
+  const { bashWriteOutside } = await import('../lib/host/gate.js');
+  const inside = (p) => p === '/wt' || p.startsWith('/wt/') || p.startsWith('/dev/') || p.startsWith('/tmp/');
+  const out = (c, cwd = '/wt') => bashWriteOutside(c, cwd, inside);
+  for (const c of ['npm test 2>&1 | tail -20', 'mkdir -p /wt/src/x', 'cd /wt && npm install', 'sed -n 1,5p /Users/me/x.js', 'find /Users/me -name x',
+    'node /usr/local/lib/x.js', 'cp /usr/local/share/x /wt/y', 'curl -s http://localhost:3000/api', 'echo hi >> /tmp/log; ls ~',
+    "cat > src/a.ts <<'EOF'\nconst p = \"/users\";\nrm -rf /\nEOF\nnpm test"]) assert.equal(out(c), null, c);
+  assert.equal(out('mkdir -p /wt/src/x', '/Users/me/chat'), null, 'absolute paths inside need no workdir');
+  for (const [c, bad] of [['rm -rf ~/projects', path.join(process.env.HOME, 'projects')], ['rm -rf ../..', '/'], ['echo x > /etc/hosts', '/etc/hosts'],
+    ['cd /Users/me/app && git reset --hard', '/Users/me/app/reset'], ['sed -i "" s/a/b/ /Users/me/x.js', '/Users/me/x.js'], ['cp /wt/a /Users/me/b', '/Users/me/b'],
+    ['git -C /Users/me/app commit -am x', '/Users/me/app'], ['tsc --outDir=/Users/me/out', '/Users/me/out'], ['cp /usr/local/bin/x /usr/bin/y', '/usr/bin/y']]) {
+    assert.equal(out(c), bad, c);
+  }
+  assert.equal(out('npm test', '/Users/me/chat'), '/Users/me/chat/test', 'a command run from outside the work paths');
+  assert.match(out('npm i -g typescript'), /^npm i -g/);
+
+  const w = makeWorld({ human: false });
+  await w.rootExec('jd_start');
+  const h = w.handle();
+  const wp = path.join(process.env.JD_WORKTREES_ROOT, 'x2-2');
+  const home = path.join(process.env.HOME, 'jd-x2-not-here');
+  const asWorker = (name, args) => judge({ name, arguments: args, agent: w.worker }, h);
+  assert.equal(asWorker('bash', { command: `rm -rf ${home}` }), null, 'no prepared work paths yet: no boundary');
+  h.run.set('repos', [{ path: w.repoPaths[0], mode: 'worktree', workPath: wp, branch: 'junior-dev/x' }]);
+  assert.match(asWorker('bash', { command: `rm -rf ${home}` })?.reason ?? '', /only inside the run's work paths .*x2-2.*jd-x2-not-here/);
+  assert.match(asWorker('write', { path: path.join(home, 'a.js'), content: 'x' })?.reason ?? '', /only inside the run's work paths/);
+  assert.match(asWorker('edit', { file_path: path.join(w.repoPaths[0], 'index.js'), old_string: 'a', new_string: 'b' })?.reason ?? '', /only inside/, 'the developer checkout is outside the worktree');
+  assert.match(asWorker('bash', { command: 'npm install', workdir: process.env.HOME })?.reason ?? '', /only inside/);
+  assert.equal(asWorker('bash', { command: 'npm install', workdir: wp }), null);
+  assert.equal(asWorker('write', { path: path.join(wp, 'src', 'a.js'), content: 'x' }), null);
+  assert.equal(asWorker('bash', { command: `cd ${wp} && git fetch origin` }), null, 'remote reads in the worktree pass');
+  assert.match(asWorker('bash', { command: `echo x >> ${path.join(h.run.dir, 'state', 'events.jsonl')}` })?.reason ?? '', /state is written only by the plugin/, 'the more specific reason wins');
+  assert.equal(judge({ name: 'bash', arguments: { command: `rm -rf ${home}` }, agent: w.root }, h), null, 'the root agent is not limited by it');
+});
+
+test('X2#4: projects below the repo root are detected; iOS checks name a shared scheme with tests; TS setup installs at the nearest lockfile', async () => {
+  const { detectStack, stacksNote, workspaceSetupItems, stackFor } = await import('../lib/profiles/index.js');
+  const write = (root, files) => { for (const [f, c] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), c); } };
+  const scheme = (tests) => `<Scheme><TestAction>${tests ? '<Testables><TestableReference skipped="NO"></TestableReference></Testables>' : '<Testables></Testables>'}</TestAction></Scheme>`;
+  const xs = (proj, name) => `${proj}/xcshareddata/xcschemes/${name}.xcscheme`;
+
+  // iOS in ios/, one shared scheme with tests
+  const a = tmpdir('jd-x24-');
+  write(a, { 'ios/App.xcodeproj/project.pbxproj': '//', [xs('ios/App.xcodeproj', 'App')]: scheme(true), 'node_modules/x/Foo.xcodeproj/project.pbxproj': '//', 'README.md': '' });
+  const sa = detectStack(a);
+  assert.equal(sa.profile, 'ios');
+  assert.deepEqual(sa.dirs, ['ios']);
+  assert.deepEqual(sa.checks.map((c) => [c.id, c.arguments]), [['build', { workspacePath: path.join(a, 'ios/App.xcodeproj'), scheme: 'App' }], ['test', { workspacePath: path.join(a, 'ios/App.xcodeproj'), scheme: 'App' }]]);
+  assert.match(stacksNote({ [a]: sa }, { withChecks: true }), /: ios in ios\n/);
+
+  // several schemes: the one named after the project wins for the build; tests use the one scheme that has them
+  const b = tmpdir('jd-x24-');
+  write(b, { 'App.xcodeproj/project.pbxproj': '//', [xs('App.xcodeproj', 'App')]: scheme(false), [xs('App.xcodeproj', 'AppTests')]: scheme(true), [xs('App.xcodeproj', 'Widget')]: scheme(false) });
+  assert.deepEqual(detectStack(b).checks.map((c) => c.arguments.scheme), ['App', 'AppTests']);
+  // several schemes and none named after the project: no guess, a note for the root
+  const c = tmpdir('jd-x24-');
+  write(c, { 'App.xcodeproj/project.pbxproj': '//', [xs('App.xcodeproj', 'Prod')]: scheme(true), [xs('App.xcodeproj', 'Staging')]: scheme(true) });
+  const sc = detectStack(c);
+  assert.ok(sc.checks.every((k) => !k.arguments.scheme));
+  assert.match(stacksNote({ [c]: sc }, { withChecks: true }), /build: `tool:ios_build [^`]*` \[several shared schemes \(Prod, Staging\): settle the scheme/);
+  // shared schemes without tests: no test check is offered, and the note says why
+  const d = tmpdir('jd-x24-');
+  write(d, { 'App.xcodeproj/project.pbxproj': '//', [xs('App.xcodeproj', 'App')]: scheme(false) });
+  const sd = detectStack(d);
+  assert.deepEqual(sd.checks.map((k) => k.id), ['build']);
+  assert.match(sd.checks[0].note, /no shared scheme has tests/);
+
+  // a TS monorepo: packages below the root, lockfile at the root
+  const e = tmpdir('jd-x24-');
+  const pkg = JSON.stringify({ scripts: { test: 'vitest' }, dependencies: { zod: '1' } });
+  write(e, { 'package.json': '{"workspaces":["packages/*"]}', 'package-lock.json': '{}', 'packages/api/package.json': pkg, 'packages/api/tsconfig.json': '{}', 'packages/web/package.json': pkg, 'packages/web/tsconfig.json': '{}' });
+  const se = detectStack(e);
+  assert.equal(se.profile, 'ts');
+  assert.deepEqual(se.dirs, [path.join('packages', 'api'), path.join('packages', 'web')]);
+  assert.deepEqual(se.checks.map((k) => [k.id, k.command, k.cwd]), [['test@packages/api', 'npm test', path.join(e, 'packages/api')], ['test@packages/web', 'npm test', path.join(e, 'packages/web')]]);
+  assert.deepEqual(workspaceSetupItems({ [e]: se }, e, e).map((i) => [i.command, i.cwd]), [['npm ci', undefined]], 'one install, at the root lockfile');
+  fs.rmSync(path.join(e, 'package-lock.json'));
+  assert.deepEqual(workspaceSetupItems({ [e]: se }, e, e).map((i) => [i.id, i.cwd]), [['deps@packages/api', path.join(e, 'packages/api')], ['deps@packages/web', path.join(e, 'packages/web')]]);
+
+  // iOS and a BFF in one repo: ambiguous, and the developer's answer keeps the folders
+  const f = tmpdir('jd-x24-');
+  write(f, { 'ios/App.xcodeproj/project.pbxproj': '//', 'bff/package.json': pkg, 'bff/tsconfig.json': '{}' });
+  const sf = detectStack(f);
+  assert.equal(sf.profile, null);
+  assert.deepEqual(sf.candidates.sort(), ['ios', 'ts']);
+  assert.match(stacksNote({ [f]: sf }), /ambiguous \((ios in ios or ts in bff|ts in bff or ios in ios)\)/);
+  const picked = stackFor(f, sf, 'ts');
+  assert.deepEqual([picked.profile, picked.dirs, picked.checks[0].cwd], ['ts', ['bff'], path.join(f, 'bff')]);
+});
+
+test('X2#7: a hand check whose screenshot could not be captured says it is unverified by screenshot', async () => {
+  const w = makeWorld({ repoFiles: () => IOS_FILES });
+  honestBuilders(w);
+  const asks = [];
+  const innerAsk = hub.overrides.ask;
+  hub.overrides.ask = (h, qs) => { asks.push(...qs); return innerAsk(h, qs); };
+  hub.overrides.executeTool = iosTool({ ios_sim_screenshot: () => { throw new Error('no booted simulator'); } });
+  try {
+    await w.settleToFinal();
+    const run = await runToEnd(w);
+    assert.equal(run.state.phase, 'done', run.state.sideReason ?? '');
+    const hc = asks.find((q) => q.id === 'HC:H1');
+    assert.match(hc.detail, /Unverified by screenshot: ios: no screenshot could be captured \(no booted simulator\)/);
+    assert.doesNotMatch(hc.detail, /Evidence:/);
+  } finally {
+    delete hub.overrides.executeTool;
+  }
+  // a launch that failed before a captured screenshot is said in the evidence itself
+  const wi = makeWorld({ repoFiles: () => IOS_FILES });
+  honestBuilders(wi);
+  const asks2 = [];
+  const innerAsk2 = hub.overrides.ask;
+  hub.overrides.ask = (h, qs) => { asks2.push(...qs); return innerAsk2(h, qs); };
+  hub.overrides.executeTool = iosTool({ ios_sim_build_run: () => { throw new Error('launch failed'); } });
+  try {
+    await wi.settleToFinal();
+    await runToEnd(wi);
+    assert.match(asks2.find((q) => q.id === 'HC:H1').detail, /Evidence: ios screenshot \/tmp\/shots\/after\.png \(it may not show the new build: ios_sim_build_run failed\)/);
   } finally {
     delete hub.overrides.executeTool;
   }
