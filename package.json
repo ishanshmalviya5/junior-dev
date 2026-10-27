@@ -30,13 +30,18 @@
     "cordis.patch.yml",
     "skills",
     "CREDITS.md",
-    "README.md"
+    "README.md",
+    "bin",
+    "hooks",
+    "commands",
+    ".claude-plugin"
   ],
   "scripts": {
     "lint": "node scripts/lint.mjs",
     "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
     "check": "npm run lint && npm test",
-    "gen:patch": "node scripts/gen-patch.mjs"
+    "gen:patch": "node scripts/gen-patch.mjs",
+    "gen:command": "node scripts/gen-command.mjs"
   },
   "dsh": {
     "manifestVersion": 1,

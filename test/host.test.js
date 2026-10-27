@@ -1644,7 +1644,7 @@ test('v2-13: the interview proposes the run settings in one question and explain
 test('v2-13: every DSH host service the plugin uses is injected; tool checks run as the root agent and surface tool errors (R3)', async () => {
   const { inject } = await import('../lib/index.js');
   const used = new Set();
-  for (const dir of ['lib', 'lib/host', 'lib/engine', 'lib/profiles']) {
+  for (const dir of ['lib', 'lib/host', 'lib/host/adapters', 'lib/engine', 'lib/profiles']) {
     for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.js'))) for (const m of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/hub\.host\.([a-zA-Z]+)/g)) used.add(m[1]);
   }
   for (const name of used) assert.ok(inject.includes(name), `hub.host.${name} is used but "${name}" is not in lib/index.js inject`);

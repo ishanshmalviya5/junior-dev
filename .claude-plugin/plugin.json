@@ -1,0 +1,8 @@
+{
+  "name": "junior-dev",
+  "version": "0.1.0",
+  "description": "Paste a PRD, agree it with the interviewer, then it builds, verifies and delivers the feature unattended.",
+  "mcpServers": {
+    "junior-dev": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server.mjs"] }
+  }
+}

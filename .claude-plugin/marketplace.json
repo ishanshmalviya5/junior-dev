@@ -1,0 +1,11 @@
+{
+  "name": "junior-dev-local",
+  "owner": { "name": "local" },
+  "plugins": [
+    {
+      "name": "junior-dev",
+      "source": "./",
+      "description": "Paste a PRD, agree it with the interviewer, then it builds, verifies and delivers the feature unattended."
+    }
+  ]
+}
